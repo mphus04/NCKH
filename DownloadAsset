@@ -1,0 +1,23 @@
+// Danh sách năm từ 2017 đến 2025
+var years = ee.List.sequence(2017, 2025);
+
+// Danh sách quý (01, 02, 03, 04)
+var quarters = ee.List(['01', '02', '03', '04']);
+
+// Lặp qua từng năm và từng quý
+years.getInfo().forEach(function(year) {
+  quarters.getInfo().forEach(function(q) {
+    // Giới hạn đến Q2-2025
+    if (!(year === 2025 && (q === '03' || q === '04'))) {
+      var assetPath = 'projects/ee-codeforrs/assets/' + year + '/training_sample_Quy' + q;
+      var trainingPoints = ee.FeatureCollection(assetPath);
+
+      Export.table.toDrive({
+        collection: trainingPoints,
+        description: 'Training_Sample_' + year + '_Q' + q,
+        folder: 'EarthEngine_Exports',
+        fileFormat: 'CSV'
+      });
+    }
+  });
+});

@@ -1,0 +1,126 @@
+/**** Start of imports. If edited, may not auto-convert in the playground. ****/
+var geometry = 
+    /* color: #d63000 */
+    /* shown: false */
+    /* displayProperties: [
+      {
+        "type": "rectangle"
+      }
+    ] */
+    ee.Geometry.Polygon(
+        [[[106.55176641381745, 10.877148866709184],
+          [106.55176641381745, 10.72876408381982],
+          [106.80445196069245, 10.72876408381982],
+          [106.80445196069245, 10.877148866709184]]], null, false);
+/***** End of imports. If edited, may not auto-convert in the playground. *****/
+// ======================================
+// Hàm mask mây từ QA60 (cho ảnh <= 2018)
+// ======================================
+function maskS2cloudsQA60(image) {
+  var qa = image.select('QA60');
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+              .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+
+  return image.updateMask(mask)
+              .multiply(0.0001)
+              .copyProperties(image, ['system:time_start']);
+}
+
+// ============================================
+// Hàm mask kết hợp Cloud Probability và SCL
+// ============================================
+function maskCloudsSCL_CloudProb(img, cloudProbCollection) {
+  var cloudProbImg = cloudProbCollection
+    .filter(ee.Filter.eq('system:index', img.get('system:index')))
+    .first();
+
+  var cloudMask = ee.Algorithms.If(
+    cloudProbImg,
+    ee.Image(cloudProbImg).select('probability').lt(50),
+    ee.Image(1) // giữ lại nếu không có cloud prob
+  );
+
+  var scl = img.select('SCL');
+  var sclMask = scl.neq(3)
+    .and(scl.neq(8))
+    .and(scl.neq(9))
+    .and(scl.neq(10))
+    .and(scl.neq(11));
+
+  return img.updateMask(ee.Image(cloudMask).and(sclMask));
+}
+
+// =======================================
+// Hàm chính lấy ảnh Sentinel-2 theo năm
+// =======================================
+function getSentinelImage(year, geometry) {
+  var numericYear = ee.Number.parse(year);
+  var startDate = ee.Date.fromYMD(numericYear, 1, 1);
+  var endDate = ee.Date.fromYMD(numericYear, 12, 31);
+
+  // if (numericYear.lte(2018)) {
+  if (numericYear.getInfo() <= 2018) {
+    var s2 = ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
+      .filterBounds(geometry)
+      .filterDate(startDate, endDate)
+      .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20));
+      print(s2.size(),'anh s2');
+
+    var masked = s2.map(maskS2cloudsQA60);
+      
+
+    return masked.median()
+      .select(['B4', 'B3', 'B2'])
+      .clip(geometry);
+  } else {
+    var s2SR = ee.ImageCollection("COPERNICUS/S2_SR")
+      .filterBounds(geometry)
+      .filterDate(startDate, endDate)
+      .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20))
+      .select([
+        'B1','B2','B3','B4','B5','B6','B7','B8',
+        'B8A','B9','B11','B12','SCL']);
+        
+      print(s2SR.size(),'anh s2R');
+
+    var s2Clouds = ee.ImageCollection("COPERNICUS/S2_CLOUD_PROBABILITY")
+      .filterBounds(geometry)
+      .filterDate(startDate, endDate);
+
+    var maskedSR = s2SR.map(function (img) {
+      return maskCloudsSCL_CloudProb(img, s2Clouds);
+    });
+
+    return ee.ImageCollection(maskedSR)
+      .median()
+      .select(['B4', 'B3', 'B2'])
+      .multiply(0.0001)
+      .clip(geometry);
+  }
+}
+
+// var year = 2024;
+// var numericYear = ee.Number(year);
+// var startDate = ee.Date.fromYMD(numericYear, 1, 1);
+// var endDate = ee.Date.fromYMD(numericYear, 12, 31);
+
+// // ===========================
+// // ẢNH THÔ - không mask
+// // ===========================
+// var rawImage = ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
+//       .filterBounds(geometry)
+//       .filterDate(startDate, endDate)
+//       .median()
+//       .select(['B4', 'B3', 'B2'])
+//       .clip(geometry)
+// var maskedImage = getSentinelImage('2021', geometry);
+
+// // Hiển thị
+// Map.centerObject(geometry, 12);
+// Map.addLayer(rawImage, {min: 0, max:4000}, 'Raw Image (No Mask)');
+// Map.addLayer(maskedImage, {min: 0, max: 0.3}, 'Masked Image');
+
+exports.getSentinelImage = getSentinelImage;

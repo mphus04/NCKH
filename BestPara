@@ -1,0 +1,420 @@
+// ======= Scientific evaluation: sample per-point by year/quarter + repeated stratified k-fold CV =======
+// Paste entire script into Earth Engine Code Editor and run.
+// ======================================================================================================
+
+// Region
+var ThuDuc = ee.FeatureCollection("projects/ee-22166045-research/assets/RanhGioiThuDuc");
+
+// ---------------- cloud masks & indices (unchanged, reused) ----------------
+function maskS2cloudsQA60(image) {
+  var qa = image.select('QA60');
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+  var maskQA = qa.bitwiseAnd(cloudBitMask).neq(0)
+                .or(qa.bitwiseAnd(cirrusBitMask).neq(0));
+  var bright = image.select(['B2','B3','B4']).divide(10000).gt(0.2).reduce(ee.Reducer.anyNonZero());
+  var ndbi = image.normalizedDifference(['B11', 'B8']).rename(['ndbi']);
+  var lowNDBI = ndbi.lt(0.1);
+  var blue = image.select('B2').divide(10000);
+  var swir = image.select('B9').divide(10000);
+  var brightCloud = blue.gt(0.2).and(swir.lt(0.15).and(lowNDBI));
+  var finalMask = maskQA.or(brightCloud);
+  return image.updateMask(finalMask.not()).copyProperties(image, ['system:time_start']);
+}
+function maskCloudsSCL_CloudProb(img, cloudProbCollection) {
+  var cloudProbImg = cloudProbCollection.filter(ee.Filter.eq('system:index', img.get('system:index'))).first();
+  var cloudMask = ee.Algorithms.If(cloudProbImg, ee.Image(cloudProbImg).select('probability').lt(40), ee.Image(1));
+  var scl = img.select('SCL');
+  var sclMask = (scl.neq(3)).and(scl.neq(8)).and(scl.neq(9)).and(scl.neq(10)).and(scl.neq(11));
+  return img.updateMask(ee.Image(cloudMask).and(sclMask));
+}
+
+function addIndices(image) {
+  var b2  = image.select('B2').divide(10000);
+  var b3  = image.select('B3').divide(10000);
+  var b4  = image.select('B4').divide(10000);
+  var b8  = image.select('B8').divide(10000);
+  var b11 = image.select('B11').divide(10000);
+
+  var ndvi = b8.subtract(b4).divide(b8.add(b4)).rename('ndvi');
+  var ndbi = b11.subtract(b8).divide(b11.add(b8)).rename('ndbi');
+  var mndwi = b3.subtract(b11).divide(b3.add(b11)).rename('mndwi');
+  var bsi = b11.add(b4).subtract(b8.add(b2))
+               .divide(b11.add(b4).add(b8.add(b2))).rename('bsi');
+
+  return image.addBands(ndvi).addBands(ndbi).addBands(mndwi).addBands(bsi);
+}
+
+// function normalize(image) {
+//   var bandNames = image.bandNames();
+//   var minDict = image.reduceRegion({ reducer: ee.Reducer.min(), geometry: ThuDuc, scale: 10, maxPixels: 1e9 });
+//   var maxDict = image.reduceRegion({ reducer: ee.Reducer.max(), geometry: ThuDuc, scale: 10, maxPixels: 1e9 });
+//   var mins = ee.Image.constant(bandNames.map(function(b){ return minDict.get(b); })).rename(bandNames);
+//   var maxs = ee.Image.constant(bandNames.map(function(b){ return maxDict.get(b); })).rename(bandNames);
+//   return image.subtract(mins).divide(maxs.subtract(mins).max(1e-6)).rename(bandNames);
+// }
+
+// ---------------- get Sentinel image server-side safe ----------------
+function getSentinelImage(year, quarter, geometry) {
+  var numericYear = ee.Number.parse(year);
+  var numericQuarter = ee.Number.parse(quarter);
+  var startMonth = numericQuarter.subtract(1).multiply(3).add(1);
+  var startDate = ee.Date.fromYMD(numericYear, startMonth, 1);
+  var endDate = startDate.advance(3, 'month');
+
+  var s2harm = ee.ImageCollection("COPERNICUS/S2_HARMONIZED").filterBounds(geometry).filterDate(startDate, endDate)
+    .select(['B2','B3','B4','B8','B9','B11','B12','QA60']).map(maskS2cloudsQA60);
+  var s2sr = ee.ImageCollection("COPERNICUS/S2_SR").filterBounds(geometry).filterDate(startDate, endDate)
+    .select(['B2','B3','B4','B8','B11','SCL']);
+  var s2Clouds = ee.ImageCollection("COPERNICUS/S2_CLOUD_PROBABILITY").filterBounds(geometry).filterDate(startDate, endDate);
+  s2sr = s2sr.map(function(img){ return maskCloudsSCL_CloudProb(img, s2Clouds); });
+  var useHarm = numericYear.lte(2018);
+  var chosen = ee.Image(ee.Algorithms.If(useHarm, s2harm.median().clip(geometry), s2sr.median().clip(geometry)));
+  return chosen;
+}
+
+// ---------------- config (tweakable) ----------------
+
+var maxSamplesPerSubset = 250; 
+var tileScaleForSampling = 4;   
+
+Map.centerObject(ThuDuc,11);
+var selectedBands = ['bsi','ndvi','ndbi','mndwi']; // features used
+var yearsTrain = [2017,2018,2019]; // pooled years for training
+var quartersList = ['01','02','03','04']; // all quarters will be read from assets
+var kFolds = 5; // stratified folds
+var nRepeats = 1; // repeats with different seeds -> gives estimate of variability (adjust smaller if slow)
+var seedStart = 0;
+
+// ---------------- validation assets (adjust paths if different) ----------------
+var valQ1 = ee.FeatureCollection('projects/ee-codeforrs/assets/2020/training_sample_Quy01');
+var valQ2 = ee.FeatureCollection('projects/ee-codeforrs/assets/2020/training_sample_Quy02');
+var valQ3 = ee.FeatureCollection('projects/ee-codeforrs/assets/2020/training_sample_Quy03');
+var valQ4 = ee.FeatureCollection('projects/ee-codeforrs/assets/2020/training_sample_Quy04');
+
+// // optional round coords to dedupe exact duplicates
+// function roundCoords(f){
+//   var c = f.geometry().coordinates();
+//   var lon = ee.Number(c.get(0)).multiply(1e5).round().divide(1e5);
+//   var lat = ee.Number(c.get(1)).multiply(1e5).round().divide(1e5);
+//   return ee.Feature(ee.Geometry.Point([lon, lat]), f.toDictionary());
+// }
+// valQ1 = valQ1.map(roundCoords);
+// valQ2 = valQ2.map(roundCoords);
+// valQ3 = valQ3.map(roundCoords);
+// valQ4 = valQ4.map(roundCoords);
+
+var valByQuarter = {'01': valQ1, '02': valQ2, '03': valQ3, '04': valQ4};
+var validation2020 = valQ1.merge(valQ2).merge(valQ3).merge(valQ4);
+//print('validation2020 total points:', validation2020.size());
+
+
+// ---------------- Build pooled training but set year & quarter properties ----------------
+function getTrainingPooledAllWithProps(yearsList) {
+  var pooled = ee.FeatureCollection([]); // start empty
+  // yearsList is e.g. [2017,2018,2019]
+  yearsList.forEach(function(y){
+    quartersList.forEach(function(q){
+      var path = 'projects/ee-codeforrs/assets/' + y + '/training_sample_Quy' + q;
+      var fc = ee.FeatureCollection(path)
+                 .map(function(f){
+                   return ee.Feature(f.geometry(), f.toDictionary()).set('year', y).set('quarter', q);
+                 });
+      pooled = pooled.merge(fc); 
+    });
+  });
+  return pooled;
+}
+
+var pooledTrainAll = getTrainingPooledAllWithProps(yearsTrain);
+print('pooledTrainAll (raw):', pooledTrainAll.size());
+
+// ---------- Robust validation + remove-overlap ----------
+var perClassCap = 100; // giữ hoặc chỉnh
+// print('perClassCap set to:', perClassCap);
+
+// lọc validation không null
+var valNonNull = validation2020.filter(ee.Filter.notNull(['class']))
+                               .filter(ee.Filter.neq('class', ''));
+print('validation 2020 with non-null/non-empty class:', valNonNull.size());
+
+
+// build valReduced (numeric or string match)
+// --- make valReduced per-class per-quarter (cap perClassCap per class per quarter) ---
+var valReducedByQuarter = ee.FeatureCollection([]);
+// quartersList là mảng JS ['01','02','03','04'] đã khai báo ở trên
+quartersList.forEach(function(q){
+  var vq = ee.FeatureCollection(valByQuarter[q]);
+  var classes = ee.List(vq.aggregate_array('class')).distinct();
+  var capped = ee.FeatureCollection(classes.map(function(c){
+    // pick numeric-or-string matching collection for this class
+    var sNum = vq.filter(ee.Filter.eq('class', ee.Number(c)));
+    var sStr = vq.filter(ee.Filter.eq('class', ee.String(c)));
+    var s = ee.FeatureCollection(ee.Algorithms.If(ee.Number(sNum.size()).gt(0), sNum, sStr));
+    return ee.FeatureCollection(ee.Algorithms.If(
+      ee.Number(s.size()).gt(perClassCap),
+      s.randomColumn('rand').sort('rand').limit(perClassCap),
+      s
+    ));
+  })).flatten();
+  valReducedByQuarter = valReducedByQuarter.merge(capped);
+});
+var valReduced = valReducedByQuarter;
+print('valReduced size (per-class per-quarter cap):', valReduced.size());
+
+// --- cap training per class per year-quarter (maxSamplesPerSubset per class per (year,quarter)) ---
+var classesTrain = ee.List(pooledTrainAll.aggregate_array('class')).distinct();
+var pooledCappedPerClassQuarter = ee.FeatureCollection([]);
+
+// yearsTrain và quartersList là mảng JS, dùng forEach client-side để iter nhanh
+yearsTrain.forEach(function(y){
+  quartersList.forEach(function(q){
+    // subset of pooledTrainAll for this year-quarter
+    var subset = pooledTrainAll.filter(ee.Filter.eq('year', y))
+                               .filter(ee.Filter.eq('quarter', q));
+    var cappedParts = ee.FeatureCollection(classesTrain.map(function(c){
+      // pick numeric-or-string matching collection for this class
+      var sNum = subset.filter(ee.Filter.eq('class', ee.Number(c)));
+      var sStr = subset.filter(ee.Filter.eq('class', ee.String(c)));
+      var s = ee.FeatureCollection(ee.Algorithms.If(ee.Number(sNum.size()).gt(0), sNum, sStr));
+      return ee.FeatureCollection(ee.Algorithms.If(
+        ee.Number(s.size()).gt(maxSamplesPerSubset),
+        s.randomColumn('rand').sort('rand').limit(maxSamplesPerSubset),
+        s
+      ));
+    })).flatten();
+    pooledCappedPerClassQuarter = pooledCappedPerClassQuarter.merge(cappedParts);
+  });
+});
+
+var pooledNoVal = pooledCappedPerClassQuarter;
+print('pooledTrainAll (raw):', pooledTrainAll.size());
+print('pooledTrainAll after per-class-per-quarter cap (pooledNoVal):', pooledNoVal.size());
+
+
+
+// ---------------- Sample training per-year/quarter in batches (fast) ----------------
+var keys = [];
+var imgs = [];
+yearsTrain.forEach(function(y){
+  quartersList.forEach(function(q){
+    var key = y + '_' + q;
+    keys.push(key);
+    // compute composite once (select only selectedBands)
+    var img = addIndices(getSentinelImage(String(y), q, ThuDuc)).select(selectedBands);
+    imgs.push(img);
+  });
+});
+// server-side dictionary mapping key -> image
+var compositeDict = ee.Dictionary.fromLists(keys, imgs);
+print(compositeDict)
+
+// Revised sampling function using cached composites, capping points and using tileScale
+function sampleTrainingByYear_cached(pooledFC, yearsList, quartersList, bandList) {
+  var years = ee.List(yearsList);
+  var quarters = ee.List(quartersList);
+  var allSamples = ee.FeatureCollection([]);
+  allSamples = years.iterate(function(y, accYear){
+    accYear = ee.FeatureCollection(accYear);
+    var yNum = ee.Number(y);
+    var byQ = quarters.iterate(function(q, accQ){
+      accQ = ee.FeatureCollection(accQ);
+      var qStr = ee.String(q);
+      var subset = ee.FeatureCollection(pooledFC)
+                     .filter(ee.Filter.eq('year', yNum))
+                     .filter(ee.Filter.eq('quarter', qStr));
+      var size = subset.size();
+      var samples = ee.Algorithms.If(size.gt(0),
+        (function(){
+          var classesList = ee.List(subset.aggregate_array('class')).distinct();
+          var nClasses = ee.Number(classesList.size());
+          var perClassCap = ee.Algorithms.If(nClasses.gte(1),
+                                         ee.Number(maxSamplesPerSubset).divide(nClasses).ceil(),
+                                         ee.Number(maxSamplesPerSubset));
+          perClassCap = ee.Number(perClassCap);
+
+          var cappedParts = classesList.map(function(c){
+            c = ee.String(c);
+            var s = subset.filter(ee.Filter.eq('class', c));
+            return s.randomColumn('rand').sort('rand').limit(perClassCap);
+          });
+          var subsetCapped = ee.FeatureCollection(cappedParts).flatten();
+
+          subsetCapped = subsetCapped.randomColumn('rand2').sort('rand2').limit(maxSamplesPerSubset);
+          var key = ee.String(yNum.format()).cat('_').cat(qStr);
+          var img = ee.Image(compositeDict.get(key)).select(bandList);
+
+          var sampled = img.sampleRegions({
+            collection: subsetCapped,
+            properties: ['class', 'year', 'quarter'],
+            scale: 10,
+            geometries: true,
+            tileScale: tileScaleForSampling
+          });
+          sampled = ee.FeatureCollection(sampled).filter(ee.Filter.notNull(bandList));
+          return sampled;
+        })(),
+        ee.FeatureCollection([])
+      );
+      return ee.FeatureCollection(accQ).merge(ee.FeatureCollection(samples));
+    }, ee.FeatureCollection([]));
+    return ee.FeatureCollection(accYear).merge(ee.FeatureCollection(byQ));
+  }, ee.FeatureCollection([]));
+  return ee.FeatureCollection(allSamples);
+}
+
+var trainingSampled = sampleTrainingByYear_cached(pooledNoVal, yearsTrain, quartersList, selectedBands);
+print('trainingSampled total (before train):', trainingSampled.size());
+
+// ---------------- Stratified fold assignment (use on trainingSampled) ----------------
+function makeStratifiedWithFold(fc, k, seed) {
+  var classes = ee.List(fc.aggregate_array('class')).distinct();
+  var parts = classes.map(function(c){
+    var sub = fc.filter(ee.Filter.eq('class', c));
+    var withR = sub.randomColumn('r', seed);
+    var withFold = withR.map(function(f){
+      var fv = ee.Feature(f);
+      var fold = ee.Number(fv.get('r')).multiply(k).floor();
+      return fv.set('fold', fold);
+    });
+    return withFold;
+  });
+  // merge parts safely even if parts is empty
+  var merged = ee.FeatureCollection(ee.List(parts).iterate(function(col, acc){
+    return ee.FeatureCollection(acc).merge(ee.FeatureCollection(col));
+  }, ee.FeatureCollection([])));
+  return merged;
+}
+
+// ---------------- Helper: summarize repeats -> mean,std,CIs ----------------
+function summarizeRepeats(fc, metricName){
+  var arr = ee.List(fc.aggregate_array(metricName));
+  var n = ee.Number(arr.length());
+  var arrArray = ee.Array(arr);
+  var mean = ee.Number(arrArray.reduce(ee.Reducer.mean(), [0]).get([0]));
+  var std = ee.Number(arrArray.reduce(ee.Reducer.stdDev(), [0]).get([0]));
+  // percentile empirical
+  var sorted = arr.sort();
+  var lowerP = ee.Algorithms.If(n.gte(1), ee.Number(sorted.get(ee.Number(n).multiply(0.025).floor().max(0))), mean);
+  var upperP = ee.Algorithms.If(n.gte(1), ee.Number(sorted.get(ee.Number(n).multiply(0.975).floor().min(n.subtract(1)))), mean);
+  // z approx if n >=30
+  var z = ee.Number(1.96);
+  var se = ee.Algorithms.If(n.gt(0), std.divide(n.sqrt()), 0);
+  se = ee.Number(se);
+  var lowerZ = mean.subtract(z.multiply(se));
+  var upperZ = mean.add(z.multiply(se));
+  var lower = ee.Algorithms.If(n.gte(30), lowerZ, lowerP);
+  var upper = ee.Algorithms.If(n.gte(30), upperZ, upperP);
+  return { mean: mean, std: std, lower95: ee.Number(lower), upper95: ee.Number(upper) };
+}
+
+// ---------------- Evaluate one parameter set using repeated stratified k-fold CV ----------------
+function evaluateParamSet(paramsDict) {
+  var seeds = ee.List.sequence(ee.Number(seedStart), ee.Number(seedStart).add(ee.Number(nRepeats)).subtract(1));
+  // for each seed, create folds then evaluate each fold
+  var feats = seeds.map(function(s){
+    s = ee.Number(s);
+    var withFold = makeStratifiedWithFold(trainingSampled, kFolds, s);
+    var folds = ee.List.sequence(0, kFolds - 1).map(function(fid){
+      fid = ee.Number(fid);
+      var tr = ee.FeatureCollection(withFold).filter(ee.Filter.neq('fold', fid));
+      var te = ee.FeatureCollection(withFold).filter(ee.Filter.eq('fold', fid));
+      // check sizes
+      var ok = tr.size().gt(0).and(te.size().gt(0));
+      return ee.Algorithms.If(ok,
+        (function(){
+          // Train using features that already have band properties
+          var clf = ee.Classifier.smileRandomForest({
+            numberOfTrees: ee.Number(paramsDict.get('numberOfTrees')).toInt(),
+            variablesPerSplit: ee.Number(paramsDict.get('variablesPerSplit')).toInt(),
+            minLeafPopulation: ee.Number(paramsDict.get('minLeafPopulation')).max(1).toInt(),
+            bagFraction: ee.Number(paramsDict.get('bagFraction'))
+            }).train({
+              features: tr,
+              classProperty: 'class',
+              inputProperties: selectedBands
+            });
+          // classify test collection (vector) — adds 'classification'
+          var classified = te.classify(clf);
+          var cm = classified.errorMatrix('class', 'classification');
+          var acc = ee.Number(cm.accuracy());
+          var kappa = ee.Number(cm.kappa());
+          // optionally collect per-class producers (not expanded here to keep lighter)
+          return ee.Feature(null, {
+            'accuracy': acc,
+            'kappa': kappa,
+            'seed': s,
+            'foldId': fid,
+            'nTrain': tr.size(),
+            'nTest': te.size()
+          });
+        })(),
+        ee.Feature(null, {'accuracy': 0, 'kappa': 0, 'seed': s, 'foldId': fid})
+      );
+    });
+    return ee.FeatureCollection(folds);
+  }); // end seeds map
+
+  var fc = ee.FeatureCollection(feats).flatten();
+
+  var accStats = summarizeRepeats(fc, 'accuracy');
+  var kappaStats = summarizeRepeats(fc, 'kappa');
+
+  return ee.Feature(null, {
+    'numberOfTrees': ee.Number(paramsDict.get('numberOfTrees')),
+    'variablesPerSplit': ee.Number(paramsDict.get('variablesPerSplit')),
+    'minLeafPopulation': ee.Number(paramsDict.get('minLeafPopulation')),
+    'bagFraction': ee.Number(paramsDict.get('bagFraction')),
+    'nRepeats': ee.Number(nRepeats),
+    'kFolds': ee.Number(kFolds),
+    'meanAccuracy': accStats.mean,
+    'stdAccuracy': accStats.std,
+    'accLower95': accStats.lower95,
+    'accUpper95': accStats.upper95,
+    'meanKappa': kappaStats.mean,
+    'stdKappa': kappaStats.std,
+    'kappaLower95': kappaStats.lower95,
+    'kappaUpper95': kappaStats.upper95
+  });
+}
+
+// ---------------- paramGrid: replace these 16 dictionaries by your actual 16 param sets ----------------
+// IMPORTANT: put your exact 16 unique parameter combinations here
+var paramGrid = ee.List([
+  ee.Dictionary({'numberOfTrees': 50, 'variablesPerSplit': 2, 'minLeafPopulation': 3, 'bagFraction': 0.63}),
+  ee.Dictionary({'numberOfTrees': 100, 'variablesPerSplit': 1, 'minLeafPopulation': 1, 'bagFraction': 0.5}),
+  ee.Dictionary({'numberOfTrees': 50, 'variablesPerSplit': 1, 'minLeafPopulation': 1, 'bagFraction': 0.63}),
+  ee.Dictionary({'numberOfTrees': 400, 'variablesPerSplit': 1, 'minLeafPopulation': 1, 'bagFraction': 0.63}),
+  ee.Dictionary({'numberOfTrees': 100, 'variablesPerSplit': 2, 'minLeafPopulation': 1, 'bagFraction': 0.63}),
+  ee.Dictionary({'numberOfTrees': 100, 'variablesPerSplit': 1, 'minLeafPopulation': 1, 'bagFraction': 0.63}),
+  ee.Dictionary({'numberOfTrees': 100, 'variablesPerSplit': 2, 'minLeafPopulation': 1, 'bagFraction': 0.5}),
+  ee.Dictionary({'numberOfTrees': 100, 'variablesPerSplit': 1, 'minLeafPopulation': 1, 'bagFraction': 1}),
+  ee.Dictionary({'numberOfTrees': 100, 'variablesPerSplit': 2, 'minLeafPopulation': 1, 'bagFraction': 1}),
+  ee.Dictionary({'numberOfTrees': 200, 'variablesPerSplit': 1, 'minLeafPopulation': 1, 'bagFraction': 1}),
+  ee.Dictionary({'numberOfTrees': 400, 'variablesPerSplit': 2, 'minLeafPopulation': 1, 'bagFraction': 0.5}),
+  ee.Dictionary({'numberOfTrees': 50, 'variablesPerSplit': 1, 'minLeafPopulation': 1, 'bagFraction': 1}),
+  ee.Dictionary({'numberOfTrees': 200, 'variablesPerSplit': 2, 'minLeafPopulation': 1, 'bagFraction': 0.63}),
+  ee.Dictionary({'numberOfTrees': 100, 'variablesPerSplit': 1, 'minLeafPopulation': 1, 'bagFraction': 0.63}),
+  ee.Dictionary({'numberOfTrees': 100, 'variablesPerSplit': 2, 'minLeafPopulation': 1, 'bagFraction': 1}),
+  ee.Dictionary({'numberOfTrees': 100, 'variablesPerSplit': 2, 'minLeafPopulation': 1, 'bagFraction': 0.5})
+]);
+  
+// ---------------- Map evaluateParamSet across your 16 candidates ----------------
+var resultsFC = ee.FeatureCollection(paramGrid.map(function(d){
+  d = ee.Dictionary(d);
+  return evaluateParamSet(d);
+}));
+
+Export.table.toDrive({
+  collection: resultsFC,
+  description: 'param16_evaluation_repeatedKfolds_2017_2019_vs_val2020',
+  folder: 'EarthEngine_Exports',
+  fileFormat: 'CSV'
+});
+
+// ======================================================================================================
+// After export:
+// - load CSV into Python/Excel, compute score = meanAccuracy - alpha * stdAccuracy (alpha=0.5 default)
+// - rank candidates, select param_final (or top-3 for ensemble check)
+// - then train final model on pooled 2017-2020 with chosen param_final and test on 2021-2024
+// ======================================================================================================

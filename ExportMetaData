@@ -1,0 +1,215 @@
+// ===============================
+// removeVietnameseTones function
+// ===============================
+function removeVietnameseTones(str) {
+  var accentsMap = {
+    'à': 'a', 'á': 'a', 'ạ': 'a', 'ả': 'a', 'ã': 'a',
+    'â': 'a', 'ầ': 'a', 'ấ': 'a', 'ậ': 'a', 'ẩ': 'a', 'ẫ': 'a',
+    'ă': 'a', 'ằ': 'a', 'ắ': 'a', 'ặ': 'a', 'ẳ': 'a', 'ẵ': 'a',
+    'è': 'e', 'é': 'e', 'ẹ': 'e', 'ẻ': 'e', 'ẽ': 'e',
+    'ê': 'e', 'ề': 'e', 'ế': 'e', 'ệ': 'e', 'ể': 'e', 'ễ': 'e',
+    'ì': 'i', 'í': 'i', 'ị': 'i', 'ỉ': 'i', 'ĩ': 'i',
+    'ò': 'o', 'ó': 'o', 'ọ': 'o', 'ỏ': 'o', 'õ': 'o',
+    'ô': 'o', 'ồ': 'o', 'ố': 'o', 'ộ': 'o', 'ổ': 'o', 'ỗ': 'o',
+    'ơ': 'o', 'ờ': 'o', 'ớ': 'o', 'ợ': 'o', 'ở': 'o', 'ỡ': 'o',
+    'ù': 'u', 'ú': 'u', 'ụ': 'u', 'ủ': 'u', 'ũ': 'u',
+    'ư': 'u', 'ừ': 'u', 'ứ': 'u', 'ự': 'u', 'ử': 'u', 'ữ': 'u',
+    'ỳ': 'y', 'ý': 'y', 'ỵ': 'y', 'ỷ': 'y', 'ỹ': 'y',
+    'đ': 'd',
+    'À': 'A', 'Á': 'A', 'Ạ': 'A', 'Ả': 'A', 'Ã': 'A',
+    'Â': 'A', 'Ầ': 'A', 'Ấ': 'A', 'Ậ': 'A', 'Ẩ': 'A', 'Ẫ': 'A',
+    'Ă': 'A', 'Ằ': 'A', 'Ắ': 'A', 'Ặ': 'A', 'Ẳ': 'A', 'Ẵ': 'A',
+    'È': 'E', 'É': 'E', 'Ẹ': 'E', 'Ẻ': 'E', 'Ẽ': 'E',
+    'Ê': 'E', 'Ề': 'E', 'Ế': 'E', 'Ệ': 'E', 'Ể': 'E', 'Ễ': 'E',
+    'Ì': 'I', 'Í': 'I', 'Ị': 'I', 'Ỉ': 'I', 'Ĩ': 'I',
+    'Ò': 'O', 'Ó': 'O', 'Ọ': 'O', 'Ỏ': 'O', 'Õ': 'O',
+    'Ô': 'O', 'Ồ': 'O', 'Ố': 'O', 'Ộ': 'O', 'Ổ': 'O', 'Ỗ': 'O',
+    'Ơ': 'O', 'Ờ': 'O', 'Ớ': 'O', 'Ợ': 'O', 'Ở': 'O', 'Ỡ': 'O',
+    'Ù': 'U', 'Ú': 'U', 'Ụ': 'U', 'Ủ': 'U', 'Ũ': 'U',
+    'Ư': 'U', 'Ừ': 'U', 'Ứ': 'U', 'Ự': 'U', 'Ử': 'U', 'Ữ': 'U',
+    'Ỳ': 'Y', 'Ý': 'Y', 'Ỵ': 'Y', 'Ỷ': 'Y', 'Ỹ': 'Y',
+    'Đ': 'D'
+  };
+  return str.split('').map(function (char) {
+    return accentsMap[char] || char;
+  }).join('');
+}
+
+// ===============================
+// Hàm export metadata
+// ===============================
+exports.exportMetadata = function (app) {
+  var year = app.yearDropdown.getValue();
+  var source = app.imageSourceDropdown.getValue();
+  var wardName = app.selectedWardName;
+
+  if (!year || !wardName || source !== "Sentinel-2") {
+    print("Vui lòng chọn đầy đủ: Phường, Năm và chọn nguồn ảnh là Sentinel-2");
+    return;
+  }
+
+  var wardNameNoAccent = removeVietnameseTones(wardName).replace(/\s+/g, '');
+  var wardFeature = app.Thu_Duc.filter(ee.Filter.eq("Ten1", wardName));
+  var geometry = wardFeature.geometry();
+
+  var s2 = ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
+    .filterBounds(geometry)
+    .filterDate(year + '-01-01', year + '-12-31')
+    .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20));
+
+  var median = s2.median().clip(geometry);
+  var bands = median.select(['B4', 'B3', 'B2']);
+
+  var stats = bands.reduceRegion({
+    reducer: ee.Reducer.minMax().combine(ee.Reducer.mean(), '', true),
+    geometry: geometry,
+    scale: 30,
+    bestEffort: true,
+    maxPixels: 1e9
+  });
+
+  var metadata = s2.map(function (img) {
+    return ee.Feature(null, {
+      'WARD': wardNameNoAccent,
+      'YEAR': year,
+      'ID': img.id(),
+      'DATE': ee.Date(img.get('system:time_start')).format('yyyy-MM-dd'),
+      'CLOUDY_PIXEL_PERCENTAGE': img.get('CLOUDY_PIXEL_PERCENTAGE'),
+      'B4_min': stats.get('B4_min'), 'B4_max': stats.get('B4_max'), 'B4_mean': stats.get('B4_mean'),
+      'B3_min': stats.get('B3_min'), 'B3_max': stats.get('B3_max'), 'B3_mean': stats.get('B3_mean'),
+      'B2_min': stats.get('B2_min'), 'B2_max': stats.get('B2_max'), 'B2_mean': stats.get('B2_mean')
+    });
+  });
+    // Export sang Asset
+//   Export.table.toAsset({
+//     collection: merged,
+//     description: 'Export_Metadata_' + wardNameNoAccent + '_' + year ,
+//     assetId: 'users/codeforRS/Metadata_' + wardNameNoAccent + '_' + year,
+//     fileFormat: 'GeoJSON'
+//   });
+// };
+
+  Export.table.toDrive({
+    collection: metadata,
+    description: 'Metadata_' + wardNameNoAccent + '_' + year,
+    fileFormat: 'CSV'
+  });
+};
+
+// // Hàm loại bỏ dấu tiếng Việt
+// function removeVietnameseTones(str) {
+//   var accentsMap = {
+//     'à': 'a', 'á': 'a', 'ạ': 'a', 'ả': 'a', 'ã': 'a',
+//     'â': 'a', 'ầ': 'a', 'ấ': 'a', 'ậ': 'a', 'ẩ': 'a', 'ẫ': 'a',
+//     'ă': 'a', 'ằ': 'a', 'ắ': 'a', 'ặ': 'a', 'ẳ': 'a', 'ẵ': 'a',
+//     'è': 'e', 'é': 'e', 'ẹ': 'e', 'ẻ': 'e', 'ẽ': 'e',
+//     'ê': 'e', 'ề': 'e', 'ế': 'e', 'ệ': 'e', 'ể': 'e', 'ễ': 'e',
+//     'ì': 'i', 'í': 'i', 'ị': 'i', 'ỉ': 'i', 'ĩ': 'i',
+//     'ò': 'o', 'ó': 'o', 'ọ': 'o', 'ỏ': 'o', 'õ': 'o',
+//     'ô': 'o', 'ồ': 'o', 'ố': 'o', 'ộ': 'o', 'ổ': 'o', 'ỗ': 'o',
+//     'ơ': 'o', 'ờ': 'o', 'ớ': 'o', 'ợ': 'o', 'ở': 'o', 'ỡ': 'o',
+//     'ù': 'u', 'ú': 'u', 'ụ': 'u', 'ủ': 'u', 'ũ': 'u',
+//     'ư': 'u', 'ừ': 'u', 'ứ': 'u', 'ự': 'u', 'ử': 'u', 'ữ': 'u',
+//     'ỳ': 'y', 'ý': 'y', 'ỵ': 'y', 'ỷ': 'y', 'ỹ': 'y',
+//     'đ': 'd',
+//     'À': 'A', 'Á': 'A', 'Ạ': 'A', 'Ả': 'A', 'Ã': 'A',
+//     'Â': 'A', 'Ầ': 'A', 'Ấ': 'A', 'Ậ': 'A', 'Ẩ': 'A', 'Ẫ': 'A',
+//     'Ă': 'A', 'Ằ': 'A', 'Ắ': 'A', 'Ặ': 'A', 'Ẳ': 'A', 'Ẵ': 'A',
+//     'È': 'E', 'É': 'E', 'Ẹ': 'E', 'Ẻ': 'E', 'Ẽ': 'E',
+//     'Ê': 'E', 'Ề': 'E', 'Ế': 'E', 'Ệ': 'E', 'Ể': 'E', 'Ễ': 'E',
+//     'Ì': 'I', 'Í': 'I', 'Ị': 'I', 'Ỉ': 'I', 'Ĩ': 'I',
+//     'Ò': 'O', 'Ó': 'O', 'Ọ': 'O', 'Ỏ': 'O', 'Õ': 'O',
+//     'Ô': 'O', 'Ồ': 'O', 'Ố': 'O', 'Ộ': 'O', 'Ổ': 'O', 'Ỗ': 'O',
+//     'Ơ': 'O', 'Ờ': 'O', 'Ớ': 'O', 'Ợ': 'O', 'Ở': 'O', 'Ỡ': 'O',
+//     'Ù': 'U', 'Ú': 'U', 'Ụ': 'U', 'Ủ': 'U', 'Ũ': 'U',
+//     'Ư': 'U', 'Ừ': 'U', 'Ứ': 'U', 'Ự': 'U', 'Ử': 'U', 'Ữ': 'U',
+//     'Ỳ': 'Y', 'Ý': 'Y', 'Ỵ': 'Y', 'Ỷ': 'Y', 'Ỹ': 'Y',
+//     'Đ': 'D'
+//   };
+//   return str.split('').map(function (char) {
+//     return accentsMap[char] || char;
+//   }).join('');
+// }
+
+// // =====================================
+// // Hàm export metadata cho 2 thời điểm
+// // =====================================
+// exports.exportMetadata = function (app) {
+//   var year1 = app.yearDropdown.getValue();
+//   var month1 = app.monthDropdown.getValue();
+//   var source1 = app.imageSourceDropdown.getValue();
+
+//   var year2 = app.yearDropdown2.getValue();
+//   var month2 = app.monthDropdown2.getValue();
+//   var source2 = app.imageSourceDropdown2.getValue();
+
+//   var wardName = app.selectedWardName;
+//   var wardNameNoAccent = removeVietnameseTones(wardName).replace(/\s+/g, '');
+//   var wardFeature = app.Thu_Duc.filter(ee.Filter.eq("Ten1", wardName));
+//   var geometry = wardFeature.geometry();
+
+//   if (!year1 || !month1 || !year2 || !month2 || !wardName) {
+//     print("Vui lòng chọn đủ 2 thời điểm và phường.");
+//     return;
+//   }
+
+//   // Hàm xử lý metadata một thời điểm
+//   var getMetadata = function (year, month, source, suffix) {
+//     var formatMonth = function (m) {
+//       return (m < 10 ? '0' : '') + m;
+//     };
+//     var startDate = year + '-' + formatMonth(month) + '-01';
+//     var endDate = ee.Date(startDate).advance(1, 'month');
+
+//     var collection;
+//     if (source === "Sentinel-2") {
+//       collection = ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
+//         .filterBounds(geometry)
+//         .filterDate(startDate, endDate);
+//     } else {
+//       print("Chỉ hỗ trợ Sentinel-2. Nguồn khác: " + source);
+//       return ee.FeatureCollection([]);
+//     }
+
+//     var median = collection.median().clip(geometry);
+//     var bands = median.select(['B4', 'B3', 'B2']);
+
+//     var stats = bands.reduceRegion({
+//       reducer: ee.Reducer.minMax().combine(ee.Reducer.mean(), '', true),
+//       geometry: geometry,
+//       scale: 30,
+//       bestEffort: true,
+//       maxPixels: 1e9
+//     });
+
+//     return collection.map(function (img) {
+//       return ee.Feature(null, {
+//         'WARD': wardNameNoAccent,
+//         'YEAR': year,
+//         'MONTH': month,
+//         'SOURCE': source,
+//         'TIME': suffix,
+//         'ID': img.id(),
+//         'DATE': ee.Date(img.get('system:time_start')).format('yyyy-MM-dd'),
+//         'CLOUDY_PIXEL_PERCENTAGE': img.get('CLOUDY_PIXEL_PERCENTAGE'),
+//         'B4_min': stats.get('B4_min'), 'B4_max': stats.get('B4_max'), 'B4_mean': stats.get('B4_mean'),
+//         'B3_min': stats.get('B3_min'), 'B3_max': stats.get('B3_max'), 'B3_mean': stats.get('B3_mean'),
+//         'B2_min': stats.get('B2_min'), 'B2_max': stats.get('B2_max'), 'B2_mean': stats.get('B2_mean')
+//       });
+//     });
+//   };
+
+//   // Lấy metadata cho 2 thời điểm
+//   var metadata1 = getMetadata(year1, month1, source1, 'Before');
+//   var metadata2 = getMetadata(year2, month2, source2, 'After');
+//   var merged = metadata1.merge(metadata2);
+
+//   // Export sang Asset
+//   Export.table.toAsset({
+//     collection: merged,
+//     description: 'Export_Metadata_' + wardNameNoAccent + '_' + year1 + month1 + '_to_' + year2 + month2,
+//     assetId: 'users/phunguyen/Metadata_' + wardNameNoAccent + '_' + year1 + month1 + '_to_' + year2 + month2,
+//     fileFormat: 'GeoJSON'
+//   });
+// };
+

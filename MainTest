@@ -1,0 +1,291 @@
+var app = {};
+
+
+app.Thu_Duc = ee.FeatureCollection("projects/ee-22166045-research/assets/PhuongTD");
+app.openBuildings = ee.FeatureCollection("projects/ee-22166045-research/assets/Footprint_Buildings");
+
+
+app.planetImage_2025 = ee.Image("projects/ee-22166045-research/assets/ThuDuc_Planet_25");
+app.planetImage_2024 = ee.Image("projects/ee-22166045-research/assets/ThuDuc_Planet_24");
+app.planetImage_2023 = ee.Image("projects/ee-22166045-research/assets/ThuDuc_Planet_23");
+app.planetImage_2022 = ee.Image("projects/ee-22166045-research/assets/ThuDuc_Planet_22");
+app.planetImage_2021 = ee.Image("projects/ee-22166045-research/assets/ThuDuc_Planet_21");
+app.planetImage_2020 = ee.Image("projects/ee-22166045-research/assets/ThuDuc_Planet_20");
+app.planetImage_2019 = ee.Image("projects/ee-22166045-research/assets/ThuDuc_Planet_19");
+app.planetImage_2018 = ee.Image("projects/ee-22166045-research/assets/ThuDuc_Planet_18");
+app.planetImage_2017 = ee.Image("projects/ee-22166045-research/assets/ThuDuc_Planet_17");
+app.planetVisParams = {
+  "2017": { bands: ["b3", "b2", "b1"], min: 0, max: 5566, gamma: 1 },
+  "2018": { bands: ["b3", "b2", "b1"], min: 0, max: 5557, gamma: 1 },
+  "2019": { bands: ["b3", "b2", "b1"], min: 0, max: 4714, gamma: 1 },
+  "2020": { bands: ["b3", "b2", "b1"], min: 0, max: 9224, gamma: 1 },
+  "2021": { bands: ["b6", "b4", "b2"], min: 0, max: 2000, gamma: 1 },
+  "2022": { bands: ["b6", "b4", "b2"], min: 0, max: 4271, gamma: 1 },
+  "2023": { bands: ["b6", "b4", "b2"], min: 0, max: 4995, gamma: 1 },
+  "2024": { bands: ["b6", "b4", "b2"], min: 0, max: 9486, gamma: 1 },
+  "2025": { bands: ["b6", "b4", "b2"], min: 0, max: 5048, gamma: 1 }
+};
+
+
+// Hàm mask mây theo SCL
+app.maskSCL = function(image) {
+  var scl = image.select('SCL');
+  var mask = scl.neq(3)   // shadow
+                .and(scl.neq(8))  // medium cloud
+                .and(scl.neq(9))  // high cloud
+                .and(scl.neq(10)) // cirrus
+                .and(scl.neq(11));// snow
+  return image.updateMask(mask);
+};
+
+// Hàm mask mây theo S2Cloudless
+app.maskS2Cloudless = function(image) {
+  var cloudProb = image.select('probability');
+  var isCloud = cloudProb.gt(50); // ngưỡng xác suất mây >50%
+  var cloudMask = isCloud.not();
+  return image.updateMask(cloudMask);
+};
+
+app.getSentinelImage = function(year, geometry) {
+  var numericYear = parseInt(year, 10);
+  var startDate = ee.Date.fromYMD(numericYear, 1, 1);
+  var endDate = ee.Date.fromYMD(numericYear, 12, 31);
+
+  // Sentinel-2 SR - chọn đúng băng
+  var s2SR = ee.ImageCollection("COPERNICUS/S2_SR")
+    .filterBounds(geometry)
+    .filterDate(startDate, endDate)
+    .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20))
+    .select([
+      'B1','B2','B3','B4','B5','B6','B7','B8',
+      'B8A','B9','B11','B12','SCL'
+    ]);
+
+  // Sentinel-2 Cloud Probability
+  var s2Clouds = ee.ImageCollection("COPERNICUS/S2_CLOUD_PROBABILITY")
+    .filterBounds(geometry)
+    .filterDate(startDate, endDate);
+
+  // Mask từng ảnh
+  var masked = s2SR.map(function(img) {
+    var cloudProbImg = s2Clouds.filter(
+      ee.Filter.eq('system:index', img.get('system:index'))
+    ).first();
+
+    var cloudMask = ee.Algorithms.If(
+      cloudProbImg,
+      ee.Image(cloudProbImg).select('probability').lt(50),
+      ee.Image(1) // giữ lại nếu không có cloud prob
+    );
+
+    var sclMask = img.select('SCL')
+      .neq(3)
+      .and(img.select('SCL').neq(8))
+      .and(img.select('SCL').neq(9))
+      .and(img.select('SCL').neq(10))
+      .and(img.select('SCL').neq(11));
+
+    var combinedMask = ee.Image(cloudMask).and(sclMask);
+    return img.updateMask(combinedMask);
+  });
+
+  // Median image
+  var median = masked.median()
+    .select(['B4','B3','B2'])
+    .multiply(0.0001)
+    .clip(geometry);
+
+  return median;
+};
+
+
+
+
+
+app.wardList = [
+  "Tân Phú", "Hiệp Phú", "Tăng Nhơn Phú A", "Tăng Nhơn Phú B", "Phước Long B",
+  "Phước Long A", "Trường Thạnh", "Long Phước", "Long Trường", "Phước Bình",
+  "Phú Hữu", "Linh Xuân", "Bình Chiểu", "Linh Trung", "Thảo Điền", "Tam Bình",
+  "Tam Phú", "Hiệp Bình Phước", "Hiệp Bình Chánh", "Linh Chiểu", "Linh Tây",
+  "Linh Đông", "Bình Thọ", "An Phú", "An Khánh", "Bình Trưng Đông", "Bình Trưng Tây",
+  "Cát Lái", "Thạnh Mỹ Lợi", "An Lợi Đông", "Thủ Thiêm"
+];
+
+
+
+
+app.wardSelected = function(wardName) {
+  app.selectedWardName = wardName;
+};
+
+app.applySelection = function () {
+  var year = app.yearDropdown.getValue();
+  var source = app.imageSourceDropdown.getValue();  
+
+  var wardFeature = app.Thu_Duc.filter(ee.Filter.eq("Ten1", app.selectedWardName));
+
+  app.mapPanel1.layers().reset();
+  app.mapPanel2.layers().reset();
+
+  var satelliteImage;
+  var trueColorVis;
+
+  if (source === "PlanetScope") {
+    satelliteImage = app["planetImage_" + year];
+    trueColorVis = app.planetVisParams[year];
+  } else if (source === "Sentinel-2") {
+    satelliteImage = app.getSentinelImage(year, wardFeature.geometry());
+    trueColorVis = { bands: ["B4", "B3", "B2"], min: 0, max: 0.3, gamma: 1 };
+  }
+
+  // Luôn clip sau khi tạo image
+  satelliteImage = satelliteImage.clip(wardFeature);
+
+  app.mapPanel1.layers().set(
+    0,
+    ui.Map.Layer(satelliteImage, trueColorVis, source + " " + year)
+  );
+
+  var clippedBuildings = app.openBuildings.filterBounds(wardFeature.geometry());
+  var styledBuildings = clippedBuildings.style({
+    color: "blue",
+    width: 1,
+    fillColor: "00000000"
+  });
+  app.footprintLayer = ui.Map.Layer(styledBuildings, {}, "Footprint Buildings");
+  app.mapPanel1.layers().set(1, app.footprintLayer);
+
+  var styleWard = wardFeature.style({
+    color: "red",
+    width: 1,
+    fillColor: "#ff8080"
+  });
+  app.mapPanel2.layers().set(0, ui.Map.Layer(styleWard, {}, "Phường " + app.selectedWardName));
+
+  app.mapPanel1.centerObject(wardFeature, 13);
+  app.mapPanel2.centerObject(wardFeature, 13);
+};
+
+// Footprint
+
+app.toggleFootprint = function () {
+  if (app.footprintLayer) {
+    var index = app.mapPanel1.layers().indexOf(app.footprintLayer);
+    if (index !== -1) {
+      app.mapPanel1.layers().remove(app.footprintLayer);
+    } else {
+      app.mapPanel1.layers().set(1, app.footprintLayer);
+    }
+  }
+};
+
+
+// Giao Dien
+
+app.createPanels = function () {
+  app.titlePanel = ui.Panel({
+    widgets: [
+      ui.Label({
+        value: "Giám sát biến động công trình xây dựng tại Thành phố Thủ Đức",
+        style: { fontWeight: "bold", fontSize: "22px", textAlign: "center", margin: "10px" }
+      })
+    ],
+    layout: ui.Panel.Layout.flow("vertical"),
+    style: { width: "100%" }
+  });
+  
+  
+  app.researchAreaTitle = ui.Label({
+    value: "Khu vực nghiên cứu",
+    style: { fontSize: "14px", fontWeight: "bold", margin: "5px 0" }
+  });
+
+
+  app.imageSourceDropdown = ui.Select({
+    items: ["PlanetScope", "Sentinel-2"],
+    placeholder: "Chọn nguồn ảnh",
+    style: { margin: "0 5px 0 0" }
+  });
+  
+
+  app.wardDropdown = ui.Select({
+    items: app.wardList,
+    placeholder: "Chọn phường",
+    onChange: function (wardName) {
+      if (wardName) app.wardSelected(wardName);
+    },
+    style: { margin: "0 5px 0 0" }
+  });
+  
+
+  var availableYears = ['2017','2018','2019','2020','2021','2022','2023','2024','2025'];
+  app.yearDropdown = ui.Select({
+    items: availableYears,
+    placeholder: "Chọn năm",
+    style: { margin: "0 5px" }
+  });
+  
+
+  app.applyButton = ui.Button({
+    label: "Apply",
+    onClick: app.applySelection,
+    style: { margin: "0 5px" }
+  });
+  
+
+  app.toggleFootprintButton = ui.Button({
+    label: "Toggle Footprint",
+    onClick: app.toggleFootprint,
+    style: { margin: "0 5px" }
+  });
+  
+  
+  app.selectionPanel = ui.Panel({
+    widgets: [app.imageSourceDropdown, app.wardDropdown, app.yearDropdown, app.applyButton, app.toggleFootprintButton],
+    layout: ui.Panel.Layout.flow("horizontal"),
+    style: { margin: "5px 0" }
+  });
+  
+
+  app.searchPanel = ui.Panel({
+    widgets: [app.researchAreaTitle, app.selectionPanel],
+    layout: ui.Panel.Layout.flow("vertical"),
+    style: { width: "450px", margin: "10px" }
+  });
+  
+
+  app.controlPanel = ui.Panel({
+    widgets: [app.titlePanel, app.searchPanel],
+    layout: ui.Panel.Layout.flow("vertical"),
+    style: { width: "33%", padding: "10px", backgroundColor: "rgba(255, 255, 255, 1)" }
+  });
+};
+
+
+
+
+app.initializeMapPanels = function () {
+  app.mapPanel1 = ui.Map();
+  app.mapPanel2 = ui.Map();
+  var linker = ui.Map.Linker([app.mapPanel1, app.mapPanel2]);
+  app.splitPanel = ui.SplitPanel({
+    firstPanel: app.mapPanel1,
+    secondPanel: app.mapPanel2,
+    orientation: "horizontal",
+    wipe: true
+  });
+};
+
+
+
+app.init = function () {
+  Map.setCenter(106.757, 10.849, 11);
+  ui.root.clear();
+  app.initializeMapPanels();
+  app.createPanels();
+  ui.root.add(app.controlPanel);
+  ui.root.add(app.splitPanel);
+};
+
+
+app.init();

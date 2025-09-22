@@ -1,0 +1,292 @@
+/**** Start of imports. If edited, may not auto-convert in the playground. ****/
+var ThuDuc = ee.FeatureCollection("projects/ee-codeforrs/assets/ThuDuc"),
+    ThucVat = /* color: #d63000 */ee.FeatureCollection([]),
+    DatXD = /* color: #98ff00 */ee.FeatureCollection([]),
+    Nuoc = /* color: #0b4a8b */ee.FeatureCollection([]),
+    DuongGT = /* color: #ffc82d */ee.FeatureCollection([]),
+    DatTrong = /* color: #00ffff */ee.FeatureCollection([]);
+/***** End of imports. If edited, may not auto-convert in the playground. *****/
+// 2. Hàm lọc mây QA60
+// function maskS2cloudsQA60(image) {
+//   var qa = image.select('QA60');
+//   var cloudBitMask = 1 << 10;
+//   var cirrusBitMask = 1 << 11;
+//   var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+//               .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+//   return image.updateMask(mask).copyProperties(image, ['system:time_start']);
+// }
+function maskS2cloudsQA60(image) {
+  var qa = image.select('QA60');
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+
+  // mask QA60
+  var maskQA = qa.bitwiseAnd(cloudBitMask).neq(0)
+                 .or(qa.bitwiseAnd(cirrusBitMask).neq(0));
+
+  // mask sáng bất thường (mây có phản xạ cao ở B2,B3,B4)
+  var bright = image.select(['B2','B3','B4']).divide(10000)  // scale reflectance
+                    .gt(0.2)
+                    .reduce(ee.Reducer.anyNonZero());
+
+  // mask NDVI thấp (không phải thực vật)
+  var ndvi = image.normalizedDifference(['B8','B4']);
+  var ndbi = image.normalizedDifference(['B11', 'B8']).rename(['ndbi']);
+  var lowNDBI = ndbi.lt(0.1);
+  var lowNdvi = ndvi.lt(0.15);
+    // Phát hiện mây sáng bằng phổ (Blue cao, SWIR thấp)
+  var blue = image.select('B2').divide(10000);
+  var swir = image.select('B9').divide(10000); // SWIR1
+  var brightCloud = blue.gt(0.2).and(swir.lt(0.15).and(lowNDBI));
+
+
+  // kết hợp
+  var finalMask = maskQA.or(brightCloud);
+  //.or(bright.and(lowNdvi));//.and(cloudCandidate));
+
+  return image.updateMask(finalMask.not())
+              .copyProperties(image, ['system:time_start']);
+}
+
+// 3. Hàm lọc mây bằng Cloud Probability + SCL
+function maskCloudsSCL_CloudProb(img, cloudProbCollection) {
+  var cloudProbImg = cloudProbCollection
+    .filter(ee.Filter.eq('system:index', img.get('system:index')))
+    .first();
+  var cloudMask = ee.Algorithms.If(
+    cloudProbImg,
+    ee.Image(cloudProbImg).select('probability').lt(40),
+    ee.Image(1)
+  );
+  var scl = img.select('SCL');
+  var sclMask = (scl.neq(3)).and(scl.neq(8)).and(scl.neq(9))
+                   .and(scl.neq(10)).and(scl.neq(11));
+  return img.updateMask(ee.Image(cloudMask).and(sclMask));
+}
+
+// 4. Hàm tính chỉ số
+function addIndices(image) {
+  var ndvi = image.normalizedDifference(['B8', 'B4']).rename(['ndvi']);
+  var ndbi = image.normalizedDifference(['B11', 'B8']).rename(['ndbi']);
+  var mndwi = image.normalizedDifference(['B3', 'B11']).rename(['mndwi']); 
+  var bsi = image.expression(
+      '(( X + Y ) - (A + B)) /(( X + Y ) + (A + B)) ', {
+        'X': image.select('B11'),
+        'Y': image.select('B4'),
+        'A': image.select('B8'),
+        'B': image.select('B2'),
+  }).rename('bsi');
+  return image.addBands(ndvi).addBands(ndbi).addBands(mndwi).addBands(bsi);
+}
+
+// 5. Hàm chuẩn hóa ảnh
+// Chuẩn hóa THEO TỪNG BAND (tránh NaN mask hết)
+function normalize(image) {
+  var bandNames = image.bandNames();
+  var minDict = image.reduceRegion({
+    reducer: ee.Reducer.min(),
+    geometry: ThuDuc, scale: 10, maxPixels: 1e9
+  });
+  var maxDict = image.reduceRegion({
+    reducer: ee.Reducer.max(),
+    geometry: ThuDuc, scale: 10, maxPixels: 1e9
+  });
+  var mins = ee.Image.constant(bandNames.map(function(b){ return minDict.get(b); })).rename(bandNames);
+  var maxs = ee.Image.constant(bandNames.map(function(b){ return maxDict.get(b); })).rename(bandNames);
+  return image.subtract(mins).divide(maxs.subtract(mins).max(1e-6)).rename(bandNames);
+}
+
+// 6. Hàm lấy ảnh Sentinel-2 theo năm/tháng
+function getSentinelImage(year, quarter, geometry) {
+
+// function getQuarterDateRange(year, quarter) 
+// lây theo quy 
+  var numericYear = ee.Number.parse(year);
+  var numericQuarter = ee.Number.parse(quarter);
+
+  var startMonth = numericQuarter.subtract(1).multiply(3).add(1);  // 1, 4, 7, 10
+  var startDate = ee.Date.fromYMD(numericYear, startMonth, 1);
+  var endDate = startDate.advance(3, 'month');
+// lây theo thang
+
+  // var numericMonth = ee.Number.parse(month);
+  // var startDate = ee.Date.fromYMD(numericYear, numericMonth, 1);
+  // var endDate = startDate.advance(1, 'month');
+
+  if (numericYear.getInfo() <= 2018) {
+    var s2 = ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
+      .filterBounds(geometry)
+      .filterDate(startDate, endDate)
+      .select([
+        'B1','B2','B3','B4','B5','B6','B7','B8',
+        'B8A','B9','B11','B12','QA60'])
+      .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20));
+      // .select(['B2','B3','B4','B8','B11','B9','QA60']);
+    print(s2.size(),'Sử dụng QA60 - TOA');
+    var masked = s2.map(maskS2cloudsQA60);
+    return masked.median().multiply(0.0001).clip(geometry);
+  } else {
+    var s2SR = ee.ImageCollection("COPERNICUS/S2_SR")
+      .filterBounds(geometry)
+      .filterDate(startDate, endDate)
+      .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20))
+      .select(['B2','B3','B4','B8','B11']);
+        // .select([
+      //   'B1','B2','B3','B4','B5','B6','B7','B8',
+      //   'B8A','B9','B11','B12','SCL']);
+    print(s2SR.size(),'Sử dụng SCL - SR')
+    var s2Clouds = ee.ImageCollection("COPERNICUS/S2_CLOUD_PROBABILITY")
+      .filterBounds(geometry)
+      .filterDate(startDate, endDate);
+    var maskedSR = s2SR.map(function (img) {
+      return maskCloudsSCL_CloudProb(img, s2Clouds);
+    });
+    return ee.ImageCollection(maskedSR).median().multiply(0.0001).clip(geometry);//
+  }
+}
+// // Tham số hiển thị
+var visParams = {
+  bands: ['B4','B3','B2'],
+  min: 0,
+  max: 0.3,
+  gamma: 1.2
+};
+var visHNN = {
+  bands: ['B8', 'B4', 'B3'], 
+  min: 0,
+  max: 0.4,
+  gamma: 1
+};
+var palette = ['green', 'red', 'blue', 'gray', 'yellow'];
+
+// Lay Mau Co Dinh
+var trainingFixed = ee.FeatureCollection('projects/ee-codeforrs/assets/NCKH/Sample_Fixed');
+print(trainingFixed)
+
+// Thêm nhãn cho từng lớp
+ThucVat   = ThucVat.map(function(f){ return f.set('class', 0); }); // 0 = Thực vật
+DatXD     = DatXD.map(function(f){ return f.set('class', 1); }); // 1 = Đất xây dựng
+Nuoc      = Nuoc.map(function(f){ return f.set('class', 2); }); // 2 = Nước
+DuongGT   = DuongGT.map(function(f){ return f.set('class', 3); }); // 3 = Đường giao thông
+DatTrong  = DatTrong.map(function(f){ return f.set('class', 4); }); // 4 = Đất trống
+var trainingPoints = trainingFixed.merge(DatXD).merge(ThucVat).merge(Nuoc).merge(DuongGT).merge(DatTrong)
+
+//Tính Số lựợng 
+print(trainingFixed.size(),'so luong mau co dinh')
+print('Số lượng mẫu sau khi chọn theo quý',trainingPoints.size());
+var classCounts = trainingPoints.aggregate_histogram('class');
+print('Số lượng mẫu từng class:', classCounts);
+Map.centerObject(ThuDuc,11)
+var year = 2018
+var quarters = '04'; 
+
+//  *** Phan Loai Va Kiem Dinh
+var img = getSentinelImage(year.toString(), quarters, ThuDuc);
+var img = addIndices(img);
+var img = normalize(img)
+
+var selectedBands = ['ndbi','bsi','ndvi','mndwi'];
+// ['B2','B3','B4','B8','B11','ndvi','ndbi','mndwi','bsi'];
+var imgSel = img.select(selectedBands);
+print(imgSel)
+
+var training = imgSel.sampleRegions({
+  collection: trainingPoints,
+  properties: ['class'],
+  scale: 10,
+  geometries: true  // giữ lại hình học của điểm
+}).filter(ee.Filter.notNull(selectedBands)); // chỉ giữ điểm không bị mask;
+print(training.size(),'mẫu hợp lệ sau khi mask ')
+var classCountsTrain = training.aggregate_histogram('class');
+print('Số lượng mẫu từng class sau khi Mask :', classCountsTrain);
+// Chia tập dữ liệu: 60% train, 40% test
+var split = 0.7;
+var withRandom = training.randomColumn('random');
+var trainingSet = withRandom.filter(ee.Filter.lt('random', split));
+var testSet = withRandom.filter(ee.Filter.gte('random', split));
+
+//  chia theo khoang cách 
+var distances = ee.List([100, 150, 200, 250, 300, 350, 400]);
+var nTreesList = ee.List([10, 20, 50, 100]); // ví dụ
+
+// Hàm tính metrics cho từng khoảng cách
+// Hàm để tính metrics cho 1 khoảng cách và 1 số cây
+function computeMetrics(distance, nTrees) {
+  // Lọc training points cách validation ≥ distance
+  var distFilter = ee.Filter.withinDistance({
+    distance: distance,
+    leftField: '.geo',
+    rightField: '.geo',
+    maxError: 10
+  });
+  var filteredTrain = ee.Join.inverted().apply(trainingSet,testSet, distFilter);
+
+  // Huấn luyện Random Forest với số cây nTrees
+  var rf = ee.Classifier.smileRandomForest(nTrees).train({
+    features: filteredTrain,
+    classProperty: 'class',
+    inputProperties: imgSel.bandNames()
+  });
+
+  // Dùng validation set để tính ma trận nhầm lẫn
+  var rfTest = testSet.classify(rf);
+  var rfConf = rfTest.errorMatrix('class', 'classification');
+
+  // Tạo Feature chứa kết quả
+  return ee.Feature(null, {
+    distance: distance,
+    nTrees: nTrees,
+    nTrain: filteredTrain.size(),
+    overallAccuracy: rfConf.accuracy(),
+    kappa: rfConf.kappa()
+  });
+}
+
+// Lồng hai vòng lặp: cho mỗi khoảng cách, cho mỗi số cây
+var results = ee.FeatureCollection(
+  distances.map(function(d) {
+    return nTreesList.map(function(t) {
+      return computeMetrics(d, t);
+    });
+  }).flatten() // flatten để gộp list 2D thành list 1D
+);
+
+// In ra kết quả
+print('Kết quả khoảng cách và số cây:', results);
+
+// Xuất ra CSV nếu muốn
+Export.table.toDrive({
+  collection: results,
+  description: 'distance_nTrees_accuracy',
+  fileFormat: 'CSV'
+});
+// // Xuất ra CSV
+// Export.table.toDrive({
+//   collection: results,
+//   description: 'Model_Comparison_'+ year + '_Quy' + quarters,
+//   fileFormat: 'CSV'
+// });
+
+// xuat ra mau assset
+Export.table.toAsset({
+  collection: trainingPoints,
+  description: year + '_training_sample' +  '_Quy' + quarters,
+  // assetId: 'users/codeforRS/' + year + '/training_sample_Quy' + quarters
+  assetId: 'projects/ee-codeforrs/assets/'+ year + '/training_sample_Quy' + quarters
+});
+
+// // =====================
+// // 5. HIỂN THỊ LÊN MAP (tùy chọn)
+// // =====================
+Map.addLayer(img, {bands: ['B4','B3','B2'], min: 0, max: 0.3}, 'Image RGB');
+// Map.addLayer(img,visHNN, 'Image HNN');
+// Map.addLayer(img, {bands:['B11','B8','B4'], min:0, max:0.4}, 'SWIR-NIR-RED');
+Map.addLayer(trainingFixed,{min: 0, max: 4, palette: ['green','red',  'blue', 'gray', 'yellow']},'Mẫu Đã chọn');
+
+// Map.addLayer(img.classify(cart),{min: 0, max: 4, palette: ['green','red',  'blue', 'gray', 'yellow']}, 'Classified CART');
+// Map.addLayer(img.classify(svm),{min: 0, max: 4, palette: [ 'green','red',  'blue', 'gray', 'yellow']}, 'Classified SVM');
+Map.addLayer(trainingSet, {color:'blue'}, 'Original Training Samples');
+Map.addLayer(testSet, {color:'yellow'}, ' Validation Samples');
+
+
+

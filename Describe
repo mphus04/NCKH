@@ -1,0 +1,638 @@
+var app = {};
+// ==========================
+// DỮ LIỆU ĐẦU VÀO
+// ==========================
+app.Thu_Duc = ee.FeatureCollection("projects/ee-22166045-research/assets/PhuongTD");
+
+app.openBuildings = ee.FeatureCollection("projects/ee-22166045-research/assets/Footprint_Buildings");
+app.planetImage_2025 = ee.Image("projects/ee-22166045-research/assets/ThuDuc_Planet_25");
+app.planetImage_2024 = ee.Image("projects/ee-22166045-research/assets/ThuDuc_Planet_24");
+app.planetImage_2023 = ee.Image("projects/ee-22166045-research/assets/ThuDuc_Planet_23");
+app.planetImage_2022 = ee.Image("projects/ee-22166045-research/assets/ThuDuc_Planet_22");
+app.planetImage_2021 = ee.Image("projects/ee-22166045-research/assets/ThuDuc_Planet_21");
+app.planetImage_2020 = ee.Image("projects/ee-22166045-research/assets/ThuDuc_Planet_20");
+app.planetImage_2019 = ee.Image("projects/ee-22166045-research/assets/ThuDuc_Planet_19");
+app.planetImage_2018 = ee.Image("projects/ee-22166045-research/assets/ThuDuc_Planet_18");
+app.planetImage_2017 = ee.Image("projects/ee-22166045-research/assets/ThuDuc_Planet_17");
+
+// Các thông số hiển thị RGB cho từng năm PlanetScope (do mỗi năm dải giá trị pixel khác nhau)
+app.planetVisParams = {
+  "2017": { bands: ["b3", "b2", "b1"], min: 0, max: 5566, gamma: 1 },
+  "2018": { bands: ["b3", "b2", "b1"], min: 0, max: 5557, gamma: 1 },
+  "2019": { bands: ["b3", "b2", "b1"], min: 0, max: 4714, gamma: 1 },
+  "2020": { bands: ["b3", "b2", "b1"], min: 0, max: 9224, gamma: 1 },
+  "2021": { bands: ["b6", "b4", "b2"], min: 0, max: 2000, gamma: 1 },
+  "2022": { bands: ["b6", "b4", "b2"], min: 0, max: 4271, gamma: 1 },
+  "2023": { bands: ["b6", "b4", "b2"], min: 0, max: 4995, gamma: 1 },
+  "2024": { bands: ["b6", "b4", "b2"], min: 0, max: 9486, gamma: 1 },
+  "2025": { bands: ["b6", "b4", "b2"], min: 0, max: 5048, gamma: 1 }
+};
+
+// // ==========================
+// // HÀM LẤY ẢNH SENTINEL THEO NĂM
+// // ==========================
+// var cloudmaking = require('users/codeforRS/NCKH:TestMaskCloud');
+var cloudmaking = require('users/codeforRS/NCKH:Test3mask');
+app.getSentinelImage = cloudmaking.getSentinelImage;
+var exportMetadataModule = require('users/codeforRS/NCKH:ExportMetaData');
+app.calculateMaskedCloudAreaPercentage = cloudmaking.calculateMaskedCloudAreaPercentage
+// var exportMetadataModule = require('users/codeforRS/NCKH:ExportView');
+// var exportMT  = require('users/codeforRS/NCKH:ExportMetaData');
+// app.exportMetadata = exportMT.exportMetadata;
+// ==========================
+// DANH SÁCH PHƯỜNG
+// ==========================
+app.wardList = [
+  "Tân Phú", "Hiệp Phú", "Tăng Nhơn Phú A", "Tăng Nhơn Phú B", "Phước Long B",
+  "Phước Long A", "Trường Thạnh", "Long Phước", "Long Trường", "Phước Bình",
+  "Phú Hữu", "Linh Xuân", "Bình Chiểu", "Linh Trung", "Thảo Điền", "Tam Bình",
+  "Tam Phú", "Hiệp Bình Phước", "Hiệp Bình Chánh", "Linh Chiểu", "Linh Tây",
+  "Linh Đông", "Bình Thọ", "An Phú", "An Khánh", "Bình Trưng Đông", "Bình Trưng Tây",
+  "Cát Lái", "Thạnh Mỹ Lợi", "An Lợi Đông", "Thủ Thiêm"
+];
+// ==========================
+// SỰ KIỆN KHI CHỌN PHƯỜNG
+// ==========================
+
+app.wardSelected = function(wardName) {
+  app.selectedWardName = wardName;
+};
+
+
+// ==========================
+// HÀM THỰC HIỆN VẼ BẢN ĐỒ
+// ==========================
+
+// app.applySelection = function () {
+//   var year = app.yearDropdown.getValue();
+//   var month = app.monthDropdown.getValue();
+//   var source = app.imageSourceDropdown.getValue();  
+//   var wardFeature = app.Thu_Duc.filter(ee.Filter.eq("Ten1", app.selectedWardName)); // Lấy phường được chọn
+
+//   // Xoá các lớp hiện tại
+//   app.mapPanel1.layers().reset();
+//   app.mapPanel2.layers().reset();
+
+//   var satelliteImage;
+//   var trueColorVis;
+
+//   // Chọn ảnh theo nguồn: Planet hoặc Sentinel
+//   if (source === "PlanetScope") {
+//     satelliteImage = app["planetImage_" + year];
+//     trueColorVis = app.planetVisParams[year];
+//   } else if (source === "Sentinel-2") {
+//     satelliteImage = app.getSentinelImage(year,month, wardFeature.geometry());
+//     trueColorVis = { bands: ["B4", "B3", "B2"], min: 0, max: 0.3, gamma: 1 };
+//   }
+//   satelliteImage = satelliteImage.clip(wardFeature);  // Clip theo ranh giới phường
+
+//   // Hiển thị ảnh vệ tinh lên bản đồ trái
+//   app.mapPanel1.layers().set(
+//     0,
+//     ui.Map.Layer(satelliteImage, trueColorVis, source + " " + year)
+//   );
+
+//   // Hiển thị footprint công trình
+//   var clippedBuildings = app.openBuildings.filterBounds(wardFeature.geometry());
+//   var styledBuildings = clippedBuildings.style({
+//     color: "blue",
+//     width: 1,
+//     fillColor: "00000000"
+//   });
+//   app.footprintLayer = ui.Map.Layer(styledBuildings, {}, "Footprint Buildings");
+//   app.mapPanel1.layers().set(1, app.footprintLayer);
+
+//   // Hiển thị đường viền phường ở bản đồ bên phải
+//   var styleWard = wardFeature.style({
+//     color: "red",
+//     width: 1,
+//     fillColor: "#ff8080"
+//   });
+//   app.mapPanel2.layers().set(0, ui.Map.Layer(styleWard, {}, "Phường " + app.selectedWardName));
+
+//   // Zoom vào phường được chọn
+//   app.mapPanel1.centerObject(wardFeature, 13);
+//   app.mapPanel2.centerObject(wardFeature, 13);
+// };
+
+// Hàm lấy ảnh theo nguồn: Sentinel-2 hoặc PlanetScope
+// Hàm lấy ảnh theo nguồn
+app.getImageBySource = function (year, month, source, geometry) {
+  var image, vis;
+  if (source === "PlanetScope") {
+    image = app["planetImage_" + year];
+    vis = app.planetVisParams[year];
+  } else if (source === "Sentinel-2") {
+    image = app.getSentinelImage(year, month, geometry);
+    var NDBI = app.addNDBI(image);
+    vis = { bands: ["B4", "B3", "B2"], min: 0, max: 0.4, gamma: 1 };
+  }
+  
+  return {
+    image: image.clip(geometry),
+    vis: vis
+  };
+};
+
+// Hiển thị lớp NDBI trên mapPanel1
+app.addNDBILayer = function (image) {
+  var ndbiVis = { min: -0.5, max: 0.5, palette: ['blue', 'white', 'brown'] };
+  var ndbiLayer = ui.Map.Layer({
+    eeObject: image.select('NDBI'),
+    visParams: ndbiVis,
+    name: 'NDBI (Built-up)',
+    shown: true,
+    opacity: 1
+  });
+  app.mapPanel1.layers().set(3, ndbiLayer); // Layer thứ 4, sau viền phường
+};
+
+// Hàm tạo lớp footprint từ geometry
+app.getFootprintLayer = function (geometry) {
+  var clippedBuildings = app.openBuildings.filterBounds(geometry);
+  var styledBuildings = clippedBuildings.style({
+    color: "red",
+    width: 1,
+    fillColor: "00000000"
+  });
+  return ui.Map.Layer(styledBuildings, {}, "Footprint Buildings");
+};
+
+// Hàm áp dụng lựa chọn và hiển thị
+// app.applySelection = function () {
+//   var year1 = app.yearDropdown.getValue();
+//   var month1 = app.monthDropdown.getValue();
+//   var source1 = app.imageSourceDropdown.getValue();
+
+//   var year2 = app.yearDropdown2.getValue();
+//   var month2 = app.monthDropdown2.getValue();
+//   var source2 = app.imageSourceDropdown2.getValue();
+
+//   var wardFeature = app.Thu_Duc.filter(ee.Filter.eq("Ten1", app.selectedWardName));
+//   var geometry = wardFeature.geometry();
+
+//   // Reset bản đồ
+//   app.mapPanel1.layers().reset();
+//   app.mapPanel2.layers().reset();
+//   var result1 = app.getImageBySource(year1, month1, source1, geometry);
+//   var result2 = app.getImageBySource(year2, month2, source2, geometry);
+  
+//   // Kiểm tra ảnh hợp lệ
+//   result1.image = ee.Image(result1.image);
+//   result2.image = ee.Image(result2.image);
+  
+//   var emptyImage1 = result1.image.bandNames().size().eq(0);
+//   var emptyImage2 = result2.image.bandNames().size().eq(0);
+  
+//   // Dùng evaluate để kiểm tra và xử lý
+//   ee.Dictionary({empty1: emptyImage1, empty2: emptyImage2}).evaluate(function (res) {
+//     if (res.empty1 || res.empty2) {
+//       var msg = "";
+//       if (res.empty1) msg += "Không có ảnh hợp lệ cho Thời điểm 1.\n";
+//       if (res.empty2) msg += "Không có ảnh hợp lệ cho Thời điểm 2.\n";
+//       app.warningLabel.setValue(msg);
+//     } else {
+//       app.warningLabel.setValue(""); // reset cảnh báo nếu ảnh hợp lệ
+  
+//   // Hiển thị footprint công trình
+//   var footprintLayer = app.getFootprintLayer(geometry);
+//   app.footprintLayer = ui.Map.Layer(footprintLayer.getEeObject(), {}, "Footprint", false);  // không bật mặc định
+//   app.mapPanel1.layers().add(app.footprintLayer);  
+  
+
+//   // Hiển thị viền phường ở panel 2
+//   var styleWard = wardFeature.style({
+//     color: "red",
+//     width: 1,
+//     fillColor: "#ff8080"
+//   });
+  
+//   app.wardLayer = ui.Map.Layer(styleWard, {}, "Phường " + app.selectedWardName, false);
+//   // Lấy ảnh và hiển thị panel 1 và 2 
+//   app.mapPanel1.layers().add(ui.Map.Layer(result1.image, result1.vis, source1 + " " + year1 + "-" + month1));
+//   app.mapPanel2.layers().add(ui.Map.Layer(result2.image, result2.vis, source2 + " " + year2 + "-" + month2));
+//   app.mapPanel2.layers().add(app.wardLayer);
+  
+//     // Sau khi hiển thị ảnh xong, gọi tính toán phần trăm mây
+//   if (source1 === "Sentinel-2") {
+//     app.calculateMaskedCloudAreaPercentage(result1.image, geometry)
+//       .evaluate(function (percent) {
+//         app.cloudPercentLabel1.setValue("Phần trăm mây thời điểm 1: " + percent.toFixed(2) + " %");
+//       });
+//   } else {
+//     app.cloudPercentLabel1.setValue("Phần trăm mây thời điểm 1: Không áp dụng");
+//   }
+  
+//   if (source2 === "Sentinel-2") {
+//     app.calculateMaskedCloudAreaPercentage(result2.image, geometry)
+//       .evaluate(function (percent) {
+//         app.cloudPercentLabel2.setValue("Phần trăm mây thời điểm 2: " + percent.toFixed(2) + " %");
+//       });
+//   } else {
+//     app.cloudPercentLabel2.setValue("Phần trăm mây thời điểm 2: Không áp dụng");
+//   }
+
+//   // Zoom vào phường
+//   app.mapPanel1.centerObject(wardFeature, 15);
+//   app.mapPanel2.centerObject(wardFeature, 15);
+// });
+
+
+// OK roi 
+//========
+// app.applySelection = function () {
+// // Time 1 
+//   var year1 = app.yearDropdown.getValue();
+//   var month1 = app.monthDropdown.getValue();
+//   var source1 = app.imageSourceDropdown.getValue();
+// // time 2 
+//   var year2 = app.yearDropdown2.getValue();
+//   var month2 = app.monthDropdown2.getValue();
+//   var source2 = app.imageSourceDropdown2.getValue();
+
+//   var wardFeature = app.Thu_Duc.filter(ee.Filter.eq("Ten1", app.selectedWardName));
+//   var geometry = wardFeature.geometry();
+
+//   app.mapPanel1.layers().reset();
+//   app.mapPanel2.layers().reset();
+
+//   var result1 = app.getImageBySource(year1, month1, source1, geometry);
+//   var result2 = app.getImageBySource(year2, month2, source2, geometry);
+
+//   var image1 = ee.Image(result1.image);
+//   var image2 = ee.Image(result2.image);
+
+//   // Kiểm tra ảnh 1
+//   image1.bandNames().size().evaluate(function (size1) {
+//     if (size1 > 0) {
+//       app.warningLabel.setValue("");
+//       app.mapPanel1.layers().add(ui.Map.Layer(image1, result1.vis, source1 + " " + year1 + "-" + month1));
+
+//       // Tính phần trăm mây
+//       if (source1 === "Sentinel-2") {
+//         app.calculateMaskedCloudAreaPercentage(image1, geometry).evaluate(function (percent) {
+//           app.cloudPercentLabel1.setValue("Phần trăm mây thời điểm 1: " + percent.toFixed(2) + " %");
+//         });
+//       } else {
+//         app.cloudPercentLabel1.setValue("Phần trăm mây thời điểm 1: Không áp dụng");
+//       }
+//       app.mapPanel1.centerObject(wardFeature, 15);
+
+//       // Footprint
+//       var footprintLayer = app.getFootprintLayer(geometry);
+//       app.footprintLayer = ui.Map.Layer(footprintLayer.getEeObject(), {}, "Footprint", false);
+//       app.mapPanel1.layers().add(app.footprintLayer);
+//     } else {
+//       app.warningLabel.setValue("Không có ảnh hợp lệ cho Thời điểm 1.");
+//       app.cloudPercentLabel1.setValue("Phần trăm mây thời điểm 1: Không xác định");
+//     }
+//   });
+
+//   // Kiểm tra ảnh 2
+//   image2.bandNames().size().evaluate(function (size2) {
+//     if (size2 > 0) {
+//       app.warningLabel.setValue("");
+//       app.mapPanel2.layers().add(ui.Map.Layer(image2, result2.vis, source2 + " " + year2 + "-" + month2));
+
+//       if (source2 === "Sentinel-2") {
+//         app.calculateMaskedCloudAreaPercentage(image2, geometry).evaluate(function (percent) {
+//           app.cloudPercentLabel2.setValue("Phần trăm mây thời điểm 2: " + percent.toFixed(2) + " %");
+//         });
+//       } else {
+//         app.cloudPercentLabel2.setValue("Phần trăm mây thời điểm 2: Không áp dụng");
+//       }
+
+//       // Zoom panel 2
+//       app.mapPanel2.centerObject(wardFeature, 15);
+
+//       // Viền phường
+//       var styleWard = wardFeature.style({
+//         color: "red",
+//         width: 1,
+//         fillColor: "#ff8080"
+//       });
+//       app.wardLayer = ui.Map.Layer(styleWard, {}, "Phường " + app.selectedWardName, false);
+//       app.mapPanel2.layers().add(app.wardLayer);
+//     } else {
+//       app.warningLabel.setValue("❌ Không có ảnh hợp lệ cho Thời điểm 2.");
+//       app.cloudPercentLabel2.setValue("Phần trăm mây thời điểm 2: Không xác định");
+//     }
+//   });
+// };
+
+app.loadAndDisplayImage = function(year, month, source, geometry, mapPanel, cloudPercentLabel, isFirst, callback) {
+  var result = app.getImageBySource(year, month, source, geometry);
+  var image = ee.Image(result.image);
+
+  image.bandNames().size().evaluate(function(size) {
+    if (size > 0) {
+      mapPanel.layers().add(ui.Map.Layer(image, result.vis, source + " " + year + "-" + month));
+
+      if (source === "Sentinel-2") {
+        app.calculateMaskedCloudAreaPercentage(image, geometry).evaluate(function (percent) {
+          cloudPercentLabel.setValue("Phần trăm mây thời điểm " + (isFirst ? "1" : "2") + ": " + percent.toFixed(2) + " %");
+        });
+      } else {
+        cloudPercentLabel.setValue("Phần trăm mây thời điểm " + (isFirst ? "1" : "2") + ": Không áp dụng");
+      }
+
+      mapPanel.centerObject(geometry, 15);
+
+      // Lưu ảnh vào app để xử lý sau nếu cần
+      if (isFirst) app.image1 = image;
+      else app.image2 = image;
+
+      // Gọi callback nếu có
+      // if (callback) callback(image);
+      // Gọi callback nếu có
+      if (source === 'Sentinel-2' && isFirst) {
+        var imageWithNDBI = app.addNDBI(image);
+        app.image1 = imageWithNDBI;  // nếu cần xử lý sau
+        app.addNDBILayer(imageWithNDBI);
+      }
+
+    } else {
+      app.warningLabel.setValue("❌ Không có ảnh hợp lệ cho Thời điểm " + (isFirst ? "1" : "2") + ".");
+      cloudPercentLabel.setValue("Phần trăm mây thời điểm " + (isFirst ? "1" : "2") + ": Không xác định");
+    }
+  });
+};
+
+
+app.applySelection = function () {
+  var year1 = app.yearDropdown.getValue();
+  var month1 = app.monthDropdown.getValue();
+  var source1 = app.imageSourceDropdown.getValue();
+
+  var year2 = app.yearDropdown2.getValue();
+  var month2 = app.monthDropdown2.getValue();
+  var source2 = app.imageSourceDropdown2.getValue();
+
+  var wardFeature = app.Thu_Duc.filter(ee.Filter.eq("Ten1", app.selectedWardName));
+  var geometry = wardFeature.geometry();
+
+  app.mapPanel1.layers().reset();
+  app.mapPanel2.layers().reset();
+
+  // Thời điểm 1 - hiển thị ảnh và gọi thêm footprint khi ảnh hợp lệ
+  app.loadAndDisplayImage(
+    year1, month1, source1,
+    geometry,
+    app.mapPanel1,
+    app.cloudPercentLabel1,
+    true,
+    function(image1) {
+      var footprintLayer = app.getFootprintLayer(geometry);
+      app.footprintLayer = ui.Map.Layer(footprintLayer.getEeObject(), {}, "Footprint", false);
+      app.mapPanel1.layers().add(app.footprintLayer);
+    }
+  );
+
+  // Thời điểm 2 - hiển thị ảnh và viền phường
+  app.loadAndDisplayImage(
+    year2, month2, source2,
+    geometry,
+    app.mapPanel2,
+    app.cloudPercentLabel2,
+    false,
+    function(image2) {
+      var styleWard = wardFeature.style({
+        color: "red",
+        width: 1,
+        fillColor: "#ff8080"
+      });
+      app.wardLayer = ui.Map.Layer(styleWard, {}, "Phường " + app.selectedWardName, false);
+      app.mapPanel2.layers().add(app.wardLayer);
+    }
+  );
+};
+
+// Hàm tính chỉ số NDBI cho ảnh Sentinel-2
+app.addNDBI = function(image) {
+  var ndbi = image.normalizedDifference(['B11', 'B8']).rename('NDBI');
+  return image.addBands(ndbi);
+};
+
+
+// ==========================
+// NÚT BẬT/TẮT LỚP FOOTPRINT
+// ==========================
+app.toggleFootprint = function () {
+  if (app.footprintLayer) {
+    var index1 = app.mapPanel1.layers().indexOf(app.footprintLayer);
+    var index2 = app.mapPanel2.layers().indexOf(app.footprintLayer);
+    if (index1 !== -1) app.mapPanel1.layers().remove(app.footprintLayer);
+    else app.mapPanel1.layers().set(2, app.footprintLayer);
+}};
+
+// ==========================
+// TẠO GIAO DIỆN
+// ==========================
+
+app.createPanels = function () {
+  // Tiêu đề
+  app.titlePanel = ui.Panel({
+    widgets: [
+      ui.Label({
+        value: "Giám sát biến động công trình xây dựng tại Thành phố Thủ Đức",
+        style: { fontWeight: "bold", fontSize: "22px", textAlign: "center", margin: "10px" }
+      })
+    ],
+    layout: ui.Panel.Layout.flow("vertical"),
+    style: { width: "100%" }
+  });
+
+  // Nút export metadata
+  app.exportMetadataButton = ui.Button({
+    label: "Export Metadata",
+    style: { margin: "0 5px" },
+    onClick: function () {
+    exportMetadataModule.exportMetadata(app);}
+  });
+
+  // Nhãn "Khu vực nghiên cứu"
+  app.researchAreaTitle = ui.Label({
+    value: "Khu vực nghiên cứu",
+    style: { fontSize: "14px", fontWeight: "bold", margin: "5px 0" }
+  });
+
+  // Dropdown chọn nguồn ảnh
+  app.imageSourceDropdown = ui.Select({
+    items: ["PlanetScope", "Sentinel-2"],
+    placeholder: "Chọn nguồn ảnh",
+    style: { margin: "0 5px 0 0" }
+  });
+  
+  app.imageSourceDropdown2 = ui.Select({
+    items: ["PlanetScope", "Sentinel-2"],
+    placeholder: "Chọn nguồn ảnh thời điểm thứ 2",
+    style: { margin: "0 5px 0 0" }
+  });
+
+  // Dropdown chọn phường
+  app.wardDropdown = ui.Select({
+    items: app.wardList,
+    placeholder: "Chọn phường",
+    onChange: function (wardName) {
+      if (wardName) app.wardSelected(wardName);
+    },
+    style: { margin: "0 5px 0 0" }
+  });
+  var availableYears = ['2017','2018','2019','2020','2021','2022','2023','2024','2025'];
+  var availableMonth = ['1','2','3','4','5','6','7','8','9','10','11','12'];
+  app.monthDropdown = ui.Select({
+    items: availableMonth,
+    placeholder: "Chọn tháng",
+    style: { margin: "0 5px" }
+  });
+  
+  // Dropdown chọn tháng thứ 2
+  app.monthDropdown2 = ui.Select({
+    items: availableMonth,
+    placeholder: "Chọn tháng 2",
+    style: { margin: "0 5px" }
+  });
+ 
+  // Dropdown chọn năm thứ 2
+  app.yearDropdown2 = ui.Select({
+    items: availableYears,
+    placeholder: "Chọn năm 2",
+    style: { margin: "0 5px" }
+  });
+
+
+  // Dropdown chọn năm
+ 
+  app.yearDropdown = ui.Select({
+    items: availableYears,
+    placeholder: "Chọn năm",
+    style: { margin: "0 5px" }
+  });
+
+  // Nút thực thi
+  app.applyButton = ui.Button({
+    label: "Apply",
+    onClick: app.applySelection,
+    style: { margin: "0 5px" }
+  });
+  // Label hiển thị % mây thời điểm 1
+  app.cloudPercentLabel1 = ui.Label({
+    value: "Phần trăm mây thời điểm 1: Chưa tính",
+    style: { margin: "5px 0 0 5px", color: "blue" }
+  });
+
+  // Label hiển thị % mây thời điểm 2
+  app.cloudPercentLabel2 = ui.Label({
+    value: "Phần trăm mây thời điểm 2: Chưa tính",
+    style: { margin: "0 0 10px 5px", color: "blue" }
+  });
+
+
+  // Nút toggle layer footprint
+  app.toggleFootprintButton = ui.Button({
+    label: "Toggle Footprint",
+    onClick: app.toggleFootprint,
+    style: { margin: "0 5px" }
+  });
+  app.warningLabel = ui.Label({
+  value: "",
+  style: { color: "red", fontWeight: "bold", margin: "5px 0 0 5px" }
+  });
+
+  // Dòng 1: Chọn ảnh thời điểm 1
+  var time1Panel = ui.Panel({
+    widgets: [
+      ui.Label("Thời điểm 1:", { fontWeight: "bold" }),
+      app.imageSourceDropdown,
+      app.yearDropdown,
+      app.monthDropdown
+    ],
+    layout: ui.Panel.Layout.flow("horizontal"),
+    style: { margin: "5px 0" }
+  });
+  
+  // Dòng 2: Chọn ảnh thời điểm 2
+  var time2Panel = ui.Panel({
+    widgets: [
+      ui.Label("Thời điểm 2:", { fontWeight: "bold" }),
+      app.imageSourceDropdown2,
+      app.yearDropdown2,
+      app.monthDropdown2
+    ],
+    layout: ui.Panel.Layout.flow("horizontal"),
+    style: { margin: "5px 0" }
+  });
+  
+  // Dòng 3: Chọn phường + các nút
+  var controlButtonPanel = ui.Panel({
+    widgets: [
+      ui.Label("Phường:", { fontWeight: "bold" }),
+      app.wardDropdown,
+      app.applyButton,
+      // app.toggleFootprintButton,
+      app.exportMetadataButton
+    ],
+    layout: ui.Panel.Layout.flow("horizontal"),
+    style: { margin: "5px 0" }
+  });
+  
+  // Gộp lại thành panel tổng
+  app.selectionPanel = ui.Panel({
+    widgets: [time1Panel, time2Panel,
+    controlButtonPanel,
+    app.cloudPercentLabel1,
+    app.cloudPercentLabel2,
+    app.warningLabel],
+    layout: ui.Panel.Layout.flow("vertical"),
+    style: { margin: "5px 0" }
+  });
+
+
+  // Panel chứa title + vùng chọn
+  app.searchPanel = ui.Panel({
+    widgets: [app.researchAreaTitle, app.selectionPanel],
+    layout: ui.Panel.Layout.flow("vertical"),
+    style: { width: "450px", margin: "10px" }
+  });
+
+  // Panel chính bên trái
+  app.controlPanel = ui.Panel({
+    widgets: [app.titlePanel, app.searchPanel],
+    layout: ui.Panel.Layout.flow("vertical"),
+    style: { width: "33%", padding: "10px", backgroundColor: "rgba(255, 255, 255, 1)" }
+  });
+};
+
+
+// ==========================
+// KHỞI TẠO 2 BẢN ĐỒ (trái-phải)
+// ==========================
+
+app.initializeMapPanels = function () {
+  app.mapPanel1 = ui.Map(); // bản đồ trái
+  app.mapPanel2 = ui.Map(); // bản đồ phải
+  var linker = ui.Map.Linker([app.mapPanel1, app.mapPanel2]); // liên kết
+  app.splitPanel = ui.SplitPanel({
+    firstPanel: app.mapPanel1,
+    secondPanel: app.mapPanel2,
+    orientation: "horizontal",
+    wipe: true
+  });
+};
+
+
+// ==========================
+// HÀM KHỞI CHẠY ỨNG DỤNG
+// ==========================
+
+app.init = function () {
+  Map.setCenter(106.757, 10.849, 11);  // Tâm của TP Thủ Đức
+  ui.root.clear();                     // Xoá giao diện mặc định
+  app.initializeMapPanels();          // Tạo bản đồ
+  app.createPanels();                 // Tạo giao diện
+  ui.root.add(app.controlPanel);      // Thêm control
+  ui.root.add(app.splitPanel);        // Thêm 2 bản đồ
+};
+
+// Chạy ứng dụng
+app.init();

@@ -1,0 +1,347 @@
+/**** Start of imports. If edited, may not auto-convert in the playground. ****/
+var geometry = ee.FeatureCollection("users/codeforRS/TP_ThuDuc"),
+    normalRegion = 
+    /* color: #0000ff */
+    /* shown: false */
+    /* displayProperties: [
+      {
+        "type": "rectangle"
+      },
+      {
+        "type": "rectangle"
+      },
+      {
+        "type": "rectangle"
+      },
+      {
+        "type": "rectangle"
+      },
+      {
+        "type": "rectangle"
+      },
+      {
+        "type": "rectangle"
+      },
+      {
+        "type": "rectangle"
+      },
+      {
+        "type": "rectangle"
+      },
+      {
+        "type": "rectangle"
+      }
+    ] */
+    ee.Geometry.MultiPolygon(
+        [[[[106.79978548545522, 10.840356210699047],
+           [106.79978548545522, 10.837490029544135],
+           [106.80381952781362, 10.837490029544135],
+           [106.80381952781362, 10.840356210699047]]],
+         [[[106.82261644858998, 10.844655430950425],
+           [106.82261644858998, 10.841452096238221],
+           [106.82810961265248, 10.841452096238221],
+           [106.82810961265248, 10.844655430950425]]],
+         [[[106.7343004255079, 10.808929314966568],
+           [106.7343004255079, 10.807622539927184],
+           [106.73571663186776, 10.807622539927184],
+           [106.73571663186776, 10.808929314966568]]],
+         [[[106.72040173696944, 10.890021260404483],
+           [106.72040173696944, 10.887661270556883],
+           [106.72387787985274, 10.887661270556883],
+           [106.72387787985274, 10.890021260404483]]],
+         [[[106.72198960470625, 10.88125548958787],
+           [106.72198960470625, 10.879401158872366],
+           [106.72469327139326, 10.879401158872366],
+           [106.72469327139326, 10.88125548958787]]],
+         [[[106.72726819204756, 10.864692536355271],
+           [106.72726819204756, 10.863133126991007],
+           [106.73117348837324, 10.863133126991007],
+           [106.73117348837324, 10.864692536355271]]],
+         [[[106.73005768942305, 10.86005643057552],
+           [106.73005768942305, 10.858834172517236],
+           [106.7319030492253, 10.858834172517236],
+           [106.7319030492253, 10.86005643057552]]],
+         [[[106.73251347830093, 10.79249925078203],
+           [106.73251347830093, 10.789548298945485],
+           [106.73783498098648, 10.789548298945485],
+           [106.73783498098648, 10.79249925078203]]],
+         [[[106.72616200735366, 10.808939737584591],
+           [106.72616200735366, 10.80792804131238],
+           [106.72865109731949, 10.80792804131238],
+           [106.72865109731949, 10.808939737584591]]]], null, false),
+    cloudRegion = 
+    /* color: #999900 */
+    /* displayProperties: [
+      {
+        "type": "rectangle"
+      },
+      {
+        "type": "rectangle"
+      },
+      {
+        "type": "rectangle"
+      },
+      {
+        "type": "rectangle"
+      },
+      {
+        "type": "rectangle"
+      },
+      {
+        "type": "rectangle"
+      },
+      {
+        "type": "rectangle"
+      },
+      {
+        "type": "rectangle"
+      },
+      {
+        "type": "rectangle"
+      },
+      {
+        "type": "rectangle"
+      },
+      {
+        "type": "rectangle"
+      },
+      {
+        "type": "rectangle"
+      }
+    ] */
+    ee.Geometry.MultiPolygon(
+        [[[[106.78244768638295, 10.845161217505833],
+           [106.78244768638295, 10.842885171270906],
+           [106.7851942684142, 10.842885171270906],
+           [106.7851942684142, 10.845161217505833]]],
+         [[[106.77987276572865, 10.854602409491088],
+           [106.77987276572865, 10.853590867470599],
+           [106.78150354880971, 10.853590867470599],
+           [106.78150354880971, 10.854602409491088]]],
+         [[[106.76416574973744, 10.829902946953105],
+           [106.76416574973744, 10.828385507366676],
+           [106.76699816245717, 10.828385507366676],
+           [106.76699816245717, 10.829902946953105]]],
+         [[[106.75549685020131, 10.845161217505833],
+           [106.75549685020131, 10.843138066152283],
+           [106.75781427879018, 10.843138066152283],
+           [106.75781427879018, 10.845161217505833]]],
+         [[[106.76510988731069, 10.836394129495332],
+           [106.76510988731069, 10.835635427111058],
+           [106.76596819419545, 10.835635427111058],
+           [106.76596819419545, 10.836394129495332]]],
+         [[[106.76365076560658, 10.827963995006202],
+           [106.76365076560658, 10.826952362921208],
+           [106.76425158042592, 10.826952362921208],
+           [106.76425158042592, 10.827963995006202]]],
+         [[[106.80708109397573, 10.854602409491088],
+           [106.80708109397573, 10.853000799710735],
+           [106.80819689292592, 10.853000799710735],
+           [106.80819689292592, 10.854602409491088]]],
+         [[[106.7961805965392, 10.858648543326735],
+           [106.7961805965392, 10.85561394808725],
+           [106.79858385581655, 10.85561394808725],
+           [106.79858385581655, 10.858648543326735]]],
+         [[[106.81025682944936, 10.855023884322328],
+           [106.81025682944936, 10.853759458045156],
+           [106.81137262839955, 10.853759458045156],
+           [106.81137262839955, 10.855023884322328]]],
+         [[[106.85325800437612, 10.790615648188819],
+           [106.85325800437612, 10.789098009924588],
+           [106.85609041709584, 10.789098009924588],
+           [106.85609041709584, 10.790615648188819]]],
+         [[[106.78107439536733, 10.806803312753603],
+           [106.78107439536733, 10.804948520447635],
+           [106.78347765464467, 10.804948520447635],
+           [106.78347765464467, 10.806803312753603]]],
+         [[[106.77626787681264, 10.812283313967052],
+           [106.77626787681264, 10.81160885767999],
+           [106.77729784507436, 10.81160885767999],
+           [106.77729784507436, 10.812283313967052]]]], null, false);
+/***** End of imports. If edited, may not auto-convert in the playground. *****/
+// 2. Hàm lọc mây QA60
+function maskS2cloudsQA60(image) {
+  var qa = image.select('QA60');
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+              .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+  return image.updateMask(mask).copyProperties(image, ['system:time_start']);
+}
+
+// 3. Hàm lọc mây bằng Cloud Probability + SCL
+function maskCloudsSCL_CloudProb(img, cloudProbCollection) {
+  var cloudProbImg = cloudProbCollection
+    .filter(ee.Filter.eq('system:index', img.get('system:index')))
+    .first();
+  var cloudMask = ee.Algorithms.If(
+    cloudProbImg,
+    ee.Image(cloudProbImg).select('probability').lt(50),
+    ee.Image(1)
+  );
+  var scl = img.select('SCL');
+  var sclMask = (scl.neq(3)).and(scl.neq(8)).and(scl.neq(9))
+                   .and(scl.neq(10));
+  return img.updateMask(ee.Image(cloudMask).and(sclMask));
+}
+
+// 4. Hàm tính chỉ số
+function addIndices(image) {
+  var ndvi = image.normalizedDifference(['B8', 'B4']).rename(['ndvi']);
+  var ndbi = image.normalizedDifference(['B11', 'B8']).rename(['ndbi']);
+  var mndwi = image.normalizedDifference(['B3', 'B11']).rename(['mndwi']); 
+  var bsi = image.expression(
+      '(( X + Y ) - (A + B)) /(( X + Y ) + (A + B)) ', {
+        'X': image.select('B11'),
+        'Y': image.select('B4'),
+        'A': image.select('B8'),
+        'B': image.select('B2'),
+  }).rename('bsi');
+  return image.addBands(ndvi).addBands(ndbi).addBands(mndwi).addBands(bsi);
+}
+
+// 5. Hàm chuẩn hóa ảnh
+function normalize(image){
+  var bandNames = image.bandNames();
+  var minDict = image.reduceRegion({
+    reducer: ee.Reducer.min(),
+    geometry: ThuDuc,
+    scale: 10,
+    maxPixels: 1e9,
+    bestEffort: true,
+    tileScale: 16
+  });
+  var maxDict = image.reduceRegion({
+    reducer: ee.Reducer.max(),
+    geometry: ThuDuc,
+    scale: 10,
+    maxPixels: 1e9,
+    bestEffort: true,
+    tileScale: 16
+  });
+  var mins = ee.Image.constant(minDict.values(bandNames));
+  var maxs = ee.Image.constant(maxDict.values(bandNames));
+  var normalized = image.subtract(mins).divide(maxs.subtract(mins));
+  return normalized;
+}
+
+// 6. Hàm lấy ảnh Sentinel-2 theo năm/tháng
+function getSentinelImage(year, quarter, geometry) {
+
+// function getQuarterDateRange(year, quarter) 
+// lây theo quy 
+  var numericYear = ee.Number.parse(year);
+  var numericQuarter = ee.Number.parse(quarter);
+
+  var startMonth = numericQuarter.subtract(1).multiply(3).add(1);  // 1, 4, 7, 10
+  var startDate = ee.Date.fromYMD(numericYear, startMonth, 1);
+  var endDate = startDate.advance(3, 'month');
+// lây theo thang
+
+  // var numericMonth = ee.Number.parse(month);
+  // var startDate = ee.Date.fromYMD(numericYear, numericMonth, 1);
+  // var endDate = startDate.advance(1, 'month');
+
+  if (numericYear.getInfo() <= 2018) {
+    var s2 = ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
+      .filterBounds(geometry)
+      .filterDate(startDate, endDate)
+      .select([
+        'B1','B2','B3','B4','B5','B6','B7','B8',
+        'B8A','B9','B10','B11','B12','QA60']);
+      // .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20));
+    var masked = s2.map(maskS2cloudsQA60);
+    return masked.median().multiply(0.0001).clip(geometry);
+  } else {
+    var s2SR = ee.ImageCollection("COPERNICUS/S2_SR")
+      .filterBounds(geometry)
+      .filterDate(startDate, endDate)
+      .select([
+        'B1','B2','B3','B4','B5','B6','B7','B8',
+        'B8A','B9','B10','B11','B12','SCL']);
+    var s2Clouds = ee.ImageCollection("COPERNICUS/S2_CLOUD_PROBABILITY")
+      .filterBounds(geometry)
+      .filterDate(startDate, endDate);
+    var maskedSR = s2SR.map(function (img) {
+      return maskCloudsSCL_CloudProb(img, s2Clouds);
+    });
+    return ee.ImageCollection(maskedSR).mosaic().multiply(0.0001).clip(geometry);//
+  }
+}
+
+var visParams = {
+  bands: ['B4', 'B3', 'B2'], 
+  min: 0,
+  max: 0.4,
+  gamma: 1
+};
+
+
+var visHNN = {
+  bands: ['B8', 'B4', 'B3'], 
+  min: 0,
+  max: 0.4,
+  gamma: 1
+};
+var img = getSentinelImage('2017', '2', geometry)
+Map.centerObject(geometry,11);
+Map.addLayer(img, visParams, 'RGB_');
+Map.addLayer(img, visHNN, 'HồngNgoai_');
+var cloudRegion;
+var stats = img.reduceRegion({
+  reducer: ee.Reducer.mean()
+            .combine(ee.Reducer.minMax(), '', true)
+            .combine(ee.Reducer.stdDev(), '', true),
+  geometry: cloudRegion,
+  scale: 10,
+  maxPixels: 1e8
+});
+print('Giá trị thống kê trong vùng mây:', stats);
+
+
+var chart = ui.Chart.image.histogram({
+  image: img.select(['B2', 'B9', 'B11']),  // chọn band bạn muốn kiểm tra
+  region: cloudRegion,
+  scale: 10,
+  maxPixels: 1e8
+}).setOptions({
+  title: 'Histogram phản xạ vùng mây',
+  hAxis: {title: 'Giá trị phản xạ'},
+  vAxis: {title: 'Số pixel'},
+  series: {
+    0: {color: 'blue'},
+    1: {color: 'gray'},
+    2: {color: 'orange'}
+  }
+});
+print(chart);
+
+//  vung khong may
+var normalRegion;
+var stats = img.reduceRegion({
+  reducer: ee.Reducer.mean()
+            .combine(ee.Reducer.minMax(), '', true)
+            .combine(ee.Reducer.stdDev(), '', true),
+  geometry: normalRegion,
+  scale: 10,
+  maxPixels: 1e8
+});
+print('Giá trị thống kê trong vùng không mây:', stats);
+
+
+var chart = ui.Chart.image.histogram({
+  image: img.select(['B2', 'B9', 'B11']),  // chọn band bạn muốn kiểm tra
+  region: normalRegion,
+  scale: 10,
+  maxPixels: 1e8
+}).setOptions({
+  title: 'Histogram phản xạ vùng không mây',
+  hAxis: {title: 'Giá trị phản xạ'},
+  vAxis: {title: 'Số pixel'},
+  series: {
+    0: {color: 'blue'},
+    1: {color: 'gray'},
+    2: {color: 'orange'}
+  }
+});
+print(chart);

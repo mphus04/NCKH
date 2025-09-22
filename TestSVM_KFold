@@ -1,0 +1,383 @@
+//============= Test SVM :  Chạy k fold + Chọn C theo hàm 2 mũ =============
+var ThuDuc = ee.FeatureCollection('projects/ee-codeforrs/assets/ThuDuc');
+function maskS2cloudsQA60(image) {
+  var qa = image.select('QA60');
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+  // mask QA60
+  var maskQA = qa.bitwiseAnd(cloudBitMask).neq(0)
+                .or(qa.bitwiseAnd(cirrusBitMask).neq(0));
+  // mask sáng bất thường (mây có phản xạ cao ở B2,B3,B4)
+  var bright = image.select(['B2','B3','B4']).divide(10000)  // scale reflectance
+                    .gt(0.2)
+                    .reduce(ee.Reducer.anyNonZero());
+
+  // mask NDVI thấp (không phải thực vật)
+  var ndvi = image.normalizedDifference(['B8','B4']);
+  var ndbi = image.normalizedDifference(['B11', 'B8']).rename(['ndbi']);
+  var lowNDBI = ndbi.lt(0.1);
+  var lowNdvi = ndvi.lt(0.15);
+    // Phát hiện mây sáng bằng phổ (Blue cao, SWIR thấp)
+  var blue = image.select('B2').divide(10000);
+  var swir = image.select('B9').divide(10000); // SWIR1
+  var brightCloud = blue.gt(0.2).and(swir.lt(0.15).and(lowNDBI));
+  // kết hợp
+  var finalMask = maskQA.or(brightCloud);
+  //.or(bright.and(lowNdvi));//.and(cloudCandidate));
+
+  return image.updateMask(finalMask.not())//.updateMask(shadow.not())
+              .copyProperties(image, ['system:time_start']);
+}
+
+// 3. Hàm lọc mây bằng Cloud Probability + SCL
+function maskCloudsSCL_CloudProb(img, cloudProbCollection) {
+  var cloudProbImg = cloudProbCollection
+    .filter(ee.Filter.eq('system:index', img.get('system:index')))
+    .first();
+  var cloudMask = ee.Algorithms.If(
+    cloudProbImg,
+    ee.Image(cloudProbImg).select('probability').lt(40),
+    ee.Image(1)
+  );
+  var scl = img.select('SCL');
+  var sclMask = (scl.neq(3)).and(scl.neq(8)).and(scl.neq(9))
+                   .and(scl.neq(10)).and(scl.neq(11));
+  return img.updateMask(ee.Image(cloudMask).and(sclMask));
+}
+
+// 4. Hàm tính chỉ số
+function addIndices(image) {
+  var ndvi = image.normalizedDifference(['B8', 'B4']).rename(['ndvi']);
+  var ndbi = image.normalizedDifference(['B11', 'B8']).rename(['ndbi']);
+  var mndwi = image.normalizedDifference(['B3', 'B11']).rename(['mndwi']); 
+  var bsi = image.expression(
+      '(( X + Y ) - (A + B)) /(( X + Y ) + (A + B)) ', {
+        'X': image.select('B11'),
+        'Y': image.select('B4'),
+        'A': image.select('B8'),
+        'B': image.select('B2'),
+  }).rename('bsi');
+  return image.addBands(ndvi).addBands(ndbi).addBands(mndwi).addBands(bsi);
+}
+
+// 5. Hàm chuẩn hóa ảnh
+// Chuẩn hóa THEO TỪNG BAND (tránh NaN mask hết)
+function normalize(image) {
+  var bandNames = image.bandNames();
+  var minDict = image.reduceRegion({
+    reducer: ee.Reducer.min(),
+    geometry: ThuDuc, scale: 10, maxPixels: 1e9
+  });
+  var maxDict = image.reduceRegion({
+    reducer: ee.Reducer.max(),
+    geometry: ThuDuc, scale: 10, maxPixels: 1e9
+  });
+  var mins = ee.Image.constant(bandNames.map(function(b){ return minDict.get(b); })).rename(bandNames);
+  var maxs = ee.Image.constant(bandNames.map(function(b){ return maxDict.get(b); })).rename(bandNames);
+  return image.subtract(mins).divide(maxs.subtract(mins).max(1e-6)).rename(bandNames);
+}
+
+// 6. Hàm lấy ảnh Sentinel-2 theo năm/tháng
+function getSentinelImage(year, quarter, geometry) {
+  var numericYear = ee.Number.parse(year);
+  var numericQuarter = ee.Number.parse(quarter);
+  var startMonth = numericQuarter.subtract(1).multiply(3).add(1);  // 1, 4, 7, 10
+  var startDate = ee.Date.fromYMD(numericYear, startMonth, 1);
+  var endDate = startDate.advance(3, 'month');
+  if (numericYear.getInfo() <= 2018) {
+    var s2 = ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
+      .filterBounds(geometry)
+      .filterDate(startDate, endDate)
+      // .sort('CLOUDY_PIXEL_PERCENTAGE')
+      // .limit(25)
+      .select(['B2','B3','B4','B8','B9','B11','B12','QA60']);
+      // .select(['B2','B3','B4','B8','B11','B9','QA60']);
+    //  print(s2.size(),'Sử dụng QA60 - TOA');
+    var masked = s2.map(maskS2cloudsQA60);
+    return masked.median().clip(geometry);//.multiply(0.0001)
+  } else {
+    var s2SR = ee.ImageCollection("COPERNICUS/S2_SR")
+      .filterBounds(geometry)
+      .filterDate(startDate, endDate)
+      // .sort('CLOUDY_PIXEL_PERCENTAGE')
+      // .limit(25)
+      .select(['B2','B3','B4','B8','B11','SCL']);
+        // .select([
+      //   'B1','B2','B3','B4','B5','B6','B7','B8',
+      //   'B8A','B9','B11','B12','SCL']);
+    //print(s2SR.size(),'Sử dụng SCL - SR')
+    var s2Clouds = ee.ImageCollection("COPERNICUS/S2_CLOUD_PROBABILITY")
+      .filterBounds(geometry)
+      .filterDate(startDate, endDate);
+    var maskedSR = s2SR.map(function (img) {
+      return maskCloudsSCL_CloudProb(img, s2Clouds);
+    });
+    return ee.ImageCollection(maskedSR).median().clip(geometry);//
+  }
+}
+// Tham số hiển thị
+var visParams = {
+  bands: ['B4','B3','B2'],
+  min: 0,
+  max: 0.4,
+  gamma: 1.2
+};
+var visHNN = {
+  bands: ['B8', 'B4', 'B3'], 
+  min: 0,
+  max: 0.4,
+  gamma: 1
+};
+var palette = ['green', 'red', 'blue', 'gray', 'yellow'];
+Map.centerObject(ThuDuc,11)
+var year = 2017
+var quarters = '03'; 
+// Lay Mau Co Dinh 
+// var trainingFixed = ee.FeatureCollection('projects/ee-codeforrs/assets/NCKH/Sample_Fixed')
+var trainingPoints = ee.FeatureCollection('projects/ee-codeforrs/assets/'+ year + '/training_sample_Quy' + quarters );
+//  *** Phan Loai Va Kiem Dinh
+var img = getSentinelImage(year.toString(), quarters, ThuDuc);
+var img = addIndices(img);
+var img = normalize(img)
+
+// var selectedBands = ['bsi','mndwi','ndvi','B4'];
+var selectedBands = ['bsi','ndvi','ndbi','mndwi'];////tot nhat mà nhanh 
+// ['B2','B3','B4','B8','B11','ndvi','ndbi','mndwi','bsi'];
+var imgSel = img.select(selectedBands);
+print(imgSel)
+
+var training = imgSel.sampleRegions({
+  collection: trainingPoints,
+  properties: ['class'],
+  scale: 10,
+  geometries: true  // giữ lại hình học của điểm
+}).filter(ee.Filter.notNull(selectedBands)); // chỉ giữ điểm không bị mask;
+//print(training.size(),'mẫu hợp lệ sau khi mask ')
+var classCountsTrain = training.aggregate_histogram('class');
+//print('Số lượng mẫu từng class sau khi Mask :', classCountsTrain);
+// Chia tập dữ liệu: 60% train, 40% test
+var split = 0.7;
+var withRandom = training.randomColumn('random');
+var trainingSet = withRandom.filter(ee.Filter.lt('random', split));
+var testSet = withRandom.filter(ee.Filter.gte('random', split));
+
+
+// Lấy số band 
+var nBands = imgSel.bandNames().length().getInfo();
+
+// ====================== PARAMETERS ======================
+var nRepeats = 1
+var kFolds   = 5;   // số fold
+var kernelList = ['RBF'];
+var expListC = ee.List.sequence(-1, 10);  
+var costList = expListC.map(function(e){ 
+  return ee.Number(2).pow(ee.Number(e)); 
+});
+
+var explistG = ee.List.sequence(-6,0)
+var gammaList = explistG.map(function(e){
+  return ee.Number(2).pow(ee.Number(e))
+});
+// var gammaList = [0.05, 0.1, 0.25, 0.5,0.75,0.95,1];
+
+// ========== PARAM GRID ==========
+var paramGrid = [];
+kernelList.forEach(function(k){
+  costList.getInfo().forEach(function(c){
+    gammaList.getInfo().forEach(function(g){
+      paramGrid.push(ee.Dictionary({
+        kernelType: k,
+        cost: c,
+        gamma: g
+      }));
+    });
+  });
+});
+paramGrid = ee.List(paramGrid);
+
+//  chia k fold phan tang 
+function makeStratifiedWithFold(fc, k, seed) {
+  var classes = ee.List(fc.aggregate_array('class')).distinct();
+  var perClass = classes.map(function(c){
+    var sub = fc.filter(ee.Filter.eq('class', c));
+    var withR = sub.randomColumn('r', seed);
+    var withFold = withR.map(function(f){
+      var fold = ee.Number(f.get('r')).multiply(k).floor();
+      return ee.Feature(f).set('fold', fold);
+    });
+    return withFold;
+  });
+  var merged = ee.FeatureCollection(ee.List(perClass).get(0));
+  var rest = ee.List(perClass).slice(1);
+  return ee.FeatureCollection(rest.iterate(function(col, acc){
+    return ee.FeatureCollection(acc).merge(ee.FeatureCollection(col));
+  }, merged));
+}
+
+
+// ========== HELPER: CHIA FOLD  không phân tầng ==========
+// function getFoldSplit(fc, k, i, seed){
+//   var withFold = fc.randomColumn('rand', seed)
+//     .map(function(f){
+//       return f.set('fold', ee.Number(f.get('rand')).multiply(k).floor());
+//     });
+//   var train = withFold.filter(ee.Filter.neq('fold', i));
+//   var test  = withFold.filter(ee.Filter.eq('fold', i));
+//   return {train: train, test: test};
+// }
+
+// ========== RUN ONE PARAM + ONE SEED ==========
+
+
+function evaluateParamSet(paramsDict){
+  var seeds = ee.List.sequence(0, nRepeats-1);
+  var feats = seeds.map(function(s){
+    return runOnceForParams(paramsDict, s);
+  });
+  var fc = ee.FeatureCollection(feats).flatten();
+
+  var accStats = summarizeRepeats(fc, 'accuracy');
+  var kappaStats = summarizeRepeats(fc, 'kappa');
+
+  var summary = ee.Feature(null, {
+    kernelType: paramsDict.get('kernelType'),
+    cost: paramsDict.get('cost'),
+    gamma: paramsDict.get('gamma'),
+    meanAccuracy: accStats.mean,
+    stdAccuracy: accStats.std,
+    accLower95: accStats.lower95,
+    accUpper95: accStats.upper95,
+    meanKappa: kappaStats.mean,
+    stdKappa: kappaStats.std,
+    kappaLower95: kappaStats.lower95,
+    kappaUpper95: kappaStats.upper95
+  });
+
+  return {summary: summary};
+}
+function runOnceForParams(paramsDict, seedRun){
+  var kernelType = ee.String(paramsDict.get('kernelType'));
+  var cost       = ee.Number(paramsDict.get('cost'));
+  var gamma      = ee.Number(paramsDict.get('gamma'));
+
+  var folds = ee.List.sequence(0, kFolds-1).map(function(foldId){
+    var split = makeStratifiedWithFold(training, kFolds, seedRun);
+    var tr = split.filter(ee.Filter.neq('fold', foldId));
+    var te = split.filter(ee.Filter.eq('fold', foldId));
+
+    var ok = tr.size().gt(0).and(te.size().gt(0));
+    return ee.Algorithms.If(ok,
+      (function(){
+        var clf = ee.Classifier.libsvm({
+          kernelType: kernelType,
+          cost: cost,
+          gamma: gamma
+        }).train({
+          features: tr,
+          classProperty: 'class',
+          inputProperties: imgSel.bandNames()
+        });
+
+        var cm = te.classify(clf).errorMatrix('class', 'classification');
+        return ee.Feature(null, {
+          accuracy: cm.accuracy(),
+          kappa: cm.kappa(),
+          seed: seedRun,
+          foldId: foldId,
+          kernelType: kernelType,
+          cost: cost,
+          gamma: gamma
+        });
+      })(),
+      ee.Feature(null, {
+        accuracy: 0,
+        kappa: 0,
+        seed: seedRun,
+        foldId: foldId,
+        kernelType: kernelType,
+        cost: cost,
+        gamma: gamma
+      })
+    );
+  });
+  return ee.FeatureCollection(folds);
+}
+
+// ========== SUMMARIZE ==========
+function summarizeRepeats(fc, metricName){
+  var arr = ee.List(fc.aggregate_array(metricName));
+  var n = arr.length();
+  var arrArray = ee.Array(arr);
+
+  var mean = ee.Number(arrArray.reduce(ee.Reducer.mean(), [0]).get([0]));
+  var std  = ee.Number(arrArray.reduce(ee.Reducer.stdDev(), [0]).get([0]));
+
+  var sorted = arr.sort();
+  var lowerP = ee.Number(sorted.get(ee.Number(n).multiply(0.025).floor().max(0)));
+  var upperP = ee.Number(sorted.get(ee.Number(n).multiply(0.975).floor().min(ee.Number(n).subtract(1))));
+
+  var z = ee.Number(1.96);
+  var se = ee.Algorithms.If(n.gt(0), std.divide(n.sqrt()), 0);
+  var lowerZ = mean.subtract(z.multiply(se));
+  var upperZ = mean.add(z.multiply(se));
+
+  var lower = ee.Algorithms.If(n>=30, lowerZ, lowerP);
+  var upper = ee.Algorithms.If(n>=30, upperZ, upperP);
+
+  return {mean: mean, std: std, lower95: lower, upper95: upper};
+}
+
+
+  // All repeats (chi tiết)
+  // var allRepeats = fc.map(function(f){
+  //   return f.set({
+  //     meanAccuracy: accStats.mean,
+  //     stdAccuracy: accStats.std,
+  //     accLower95: accStats.lower95,
+  //     accUpper95: accStats.upper95,
+  //     meanKappa: kappaStats.mean,
+  //     stdKappa: kappaStats.std,
+  //     kappaLower95: kappaStats.lower95,
+  //     kappaUpper95: kappaStats.upper95
+  //   });
+  // }
+  // );
+  // allRepeats: allRepeats};
+
+// ========== RUN GRID ==========
+var resultsSummary = paramGrid.map(function(d){
+  d = ee.Dictionary(d);
+  return evaluateParamSet(d).summary;
+});
+resultsSummary = ee.FeatureCollection(resultsSummary);
+
+// var resultsAllRepeats = paramGrid.map(function(d){
+//   d = ee.Dictionary(d);
+//   return evaluateParamSet(d).allRepeats;
+// });
+// resultsAllRepeats = ee.FeatureCollection(resultsAllRepeats).flatten();
+
+// ========== EXPORT ==========
+Export.table.toDrive({
+  collection: resultsSummary,
+  description: 'SVM_grid_kfold_'+ year + '_Q'+ quarters,
+  folder: 'EarthEngine_Exports',
+  fileFormat: 'CSV'
+});
+// Export.table.toDrive({
+//   collection: resultsAllRepeats,
+//   description: 'SVM_grid_result_Kfold' + year + '_Quy' + quarters,
+//   folder: 'EarthEngine_Exports',
+//   fileFormat: 'CSV'
+// });
+
+// Check console
+// print('Summary:', resultsSummary.limit(1));
+// print('All repeats:', resultsAllRepeats.limit(1));
+
+// // =====================
+// // 5. HIỂN THỊ LÊN MAP (tùy chọn)
+// // =====================
+//Map.addLayer(img, {bands: ['B4','B3','B2'], min: 0, max: 0.4}, 'Image RGB');
+//Map.addLayer(trainingFixed,{min: 0, max: 4, palette: ['green','red',  'blue', 'gray', 'yellow']},'Mẫu Đã chọn');
+//Map.addLayer(img.classify(rf), {min: 0, max: 4, palette: ['green','red',  'blue', 'gray', 'yellow']}, 'Classified RF');

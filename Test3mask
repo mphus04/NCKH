@@ -1,0 +1,186 @@
+/**** Start of imports. If edited, may not auto-convert in the playground. ****/
+var geometry = 
+    /* color: #d63000 */
+    /* shown: false */
+    /* displayProperties: [
+      {
+        "type": "rectangle"
+      }
+    ] */
+    ee.Geometry.Polygon(
+        [[[106.67992769785988, 10.869808834902972],
+          [106.67992769785988, 10.781459104262193],
+          [106.80558382578957, 10.781459104262193],
+          [106.80558382578957, 10.869808834902972]]], null, false);
+/***** End of imports. If edited, may not auto-convert in the playground. *****/
+function maskS2cloudsQA60(image) {
+  var qa = image.select('QA60');
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+              .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+
+  return image.updateMask(mask)
+              .copyProperties(image, ['system:time_start']);
+}
+
+// ============================================
+// Hàm mask kết hợp Cloud Probability và SCL
+// ============================================
+function maskCloudsSCL_CloudProb(img, cloudProbCollection) {
+  var cloudProbImg = cloudProbCollection
+    .filter(ee.Filter.eq('system:index', img.get('system:index')))
+    .first();
+
+  var cloudMask = ee.Algorithms.If(
+    cloudProbImg,
+    ee.Image(cloudProbImg).select('probability').lt(50),
+    ee.Image(1) // giữ lại nếu không có cloud prob
+  );
+
+  var scl = img.select('SCL');
+  var sclMask = scl.neq(3)
+    .and(scl.neq(8))
+    .and(scl.neq(9))
+    .and(scl.neq(10))
+    .and(scl.neq(11));
+
+  return img.updateMask(ee.Image(cloudMask).and(sclMask));
+}
+
+// ==============================================
+// Hàm lấy ảnh Sentinel-2 theo tháng và năm
+// ==============================================
+function getSentinelImage(year, month, geometry) {
+  var numericYear = ee.Number.parse(year);
+  var numericMonth = ee.Number.parse(month);
+
+  var startDate = ee.Date.fromYMD(numericYear, numericMonth, 1);
+  var endDate = startDate.advance(1, 'month'); // kết thúc cuối tháng
+  if (numericYear.getInfo() <= 2018) {
+    var s2 = ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
+      .filterBounds(geometry)
+      .filterDate(startDate, endDate)
+      .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20));
+    // var best = ee.Image(s2.first()); // Ảnh ít mây nhất
+    var masked = s2.map(maskS2cloudsQA60);
+
+
+    print(s2.size(),'anh s2');
+
+    return masked.median()
+      .multiply(0.0001)
+      // .select(['B4', 'B3', 'B2'])
+      .clip(geometry);
+  } else {
+    var s2SR = ee.ImageCollection("COPERNICUS/S2_SR")
+      .filterBounds(geometry)
+      .filterDate(startDate, endDate)
+      // .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20))
+      .select([
+        'B1','B2','B3','B4','B5','B6','B7','B8',
+        'B8A','B9','B11','B12','SCL']);
+    print(s2SR.size(),'anh s2SR');
+
+    var s2Clouds = ee.ImageCollection("COPERNICUS/S2_CLOUD_PROBABILITY")
+      .filterBounds(geometry)
+      .filterDate(startDate, endDate);
+
+    var maskedSR = s2SR.map(function (img) {
+      return maskCloudsSCL_CloudProb(img, s2Clouds);
+    });
+
+    return ee.ImageCollection(maskedSR)
+      .median()
+      .multiply(0.0001)
+      // .select(['B4', 'B3', 'B2'])
+      .clip(geometry);
+  }
+}
+
+
+function analyzeMaskedImage(image, geometry, label) {
+  // 1. Tính giá trị trung bình sau mask
+  var meanStats = image.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: geometry,
+    scale: 10,
+    maxPixels: 1e9
+  });
+  // 2. Tính diện tích không mây (pixel còn lại sau mask)
+  var mask = image.mask().reduce(ee.Reducer.min()); // mask chung của các band
+  var pixelArea = ee.Image.pixelArea();
+
+  var clearArea = pixelArea.updateMask(mask);        // không mây
+  var cloudArea = pixelArea.updateMask(mask.not());  // bị mask (mây)
+
+  var areaClear = clearArea.reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: geometry,
+    scale: 10,
+    maxPixels: 1e9
+  });
+
+  var areaCloud = cloudArea.reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: geometry,
+    scale: 10,
+    maxPixels: 1e9
+  });
+  // 3. In ra kết quả
+  //print('Mean B2, B3, B4:', meanStats);
+  print('Diện tích không mây (m²):', areaClear);
+  print('Diện tích mây (m²):', areaCloud);
+}
+
+function calculateMaskedCloudAreaPercentage(maskedImage, geometry) {
+  // Ảnh mask: giá trị 1 là vùng giữ lại (không mây), null là mây bị loại bỏ
+  var validMask = maskedImage.select('B2').mask();
+  // Mặt nạ nhị phân: 1 = không mây, 0 = mây bị mask
+  var binaryMask = validMask.unmask(0);
+  // Tạo pixel area image (đơn vị: m²)
+  var pixelArea = ee.Image.pixelArea();
+  // Diện tích không bị mask (valid)
+  var validArea = pixelArea.updateMask(binaryMask).reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: geometry,
+    scale: 10,
+    maxPixels: 1e9
+  }).get('area');
+  // Diện tích bị mask (clouds)
+  var maskedArea = pixelArea.updateMask(binaryMask.not()).reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: geometry,
+    scale: 10,
+    maxPixels: 1e9
+  }).get('area');
+  // Tổng diện tích
+  var totalArea = ee.Number(validArea).add(ee.Number(maskedArea));
+  // Tính % mây bị mask
+  var cloudPercent = ee.Number(maskedArea).divide(totalArea).multiply(100);
+  return cloudPercent;
+}
+
+
+// // var geometry = geometry 
+
+// // Ví dụ: tháng 1 năm 2018 và tháng 1 năm 2024
+// var image1 = getSentinelImage('2017','8', geometry);
+// var image2 = getSentinelImage('2024','8', geometry);
+// var cloudPercent = calculateMaskedCloudAreaPercentage(image1, geometry);
+// var cloudPercent2 = calculateMaskedCloudAreaPercentage(image2, geometry);
+// // print('Phần trăm diện tích mây bị mask:', cloudPercent);
+// // print('Phần trăm diện tích mây bị mask 2 :', cloudPercent2);
+// // // Phân tích
+// // analyzeMaskedImage(image1, geometry, 'Tháng 8 - 2017');
+// // analyzeMaskedImage(image2, geometry, 'Tháng 8 - 2024');
+
+// // Hiển thị lên bản đồ
+// Map.centerObject(geometry, 12);
+// Map.addLayer(image1, {min: 0, max: 0.4}, 'Tháng 8 - 2017');
+// Map.addLayer(image2, {min: 0, max: 0.4}, 'Tháng 8 - 2024');
+
+exports.getSentinelImage = getSentinelImage;
+exports.analyzeMaskedImage = analyzeMaskedImage;
+exports.calculateMaskedCloudAreaPercentage = calculateMaskedCloudAreaPercentage;

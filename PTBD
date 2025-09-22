@@ -1,0 +1,180 @@
+// 2. Hàm lọc mây QA60
+function maskS2cloudsQA60(image) {
+  var qa = image.select('QA60');
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+              .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+  return image.updateMask(mask).copyProperties(image, ['system:time_start']);
+}
+
+// 3. Hàm lọc mây bằng Cloud Probability + SCL
+function maskCloudsSCL_CloudProb(img, cloudProbCollection) {
+  var cloudProbImg = cloudProbCollection
+    .filter(ee.Filter.eq('system:index', img.get('system:index')))
+    .first();
+  var cloudMask = ee.Algorithms.If(
+    cloudProbImg,
+    ee.Image(cloudProbImg).select('probability').lt(50),
+    ee.Image(1)
+  );
+  var scl = img.select('SCL');
+  var sclMask = (scl.neq(3)).and(scl.neq(8)).and(scl.neq(9))
+                   .and(scl.neq(10));
+  return img.updateMask(ee.Image(cloudMask).and(sclMask));
+}
+
+// 4. Hàm tính chỉ số
+function addIndices(image) {
+  var ndvi = image.normalizedDifference(['B8', 'B4']).rename(['ndvi']);
+  var ndbi = image.normalizedDifference(['B11', 'B8']).rename(['ndbi']);
+  var mndwi = image.normalizedDifference(['B3', 'B11']).rename(['mndwi']); 
+  var bsi = image.expression(
+      '(( X + Y ) - (A + B)) /(( X + Y ) + (A + B)) ', {
+        'X': image.select('B11'),
+        'Y': image.select('B4'),
+        'A': image.select('B8'),
+        'B': image.select('B2'),
+  }).rename('bsi');
+  return image.addBands(ndvi).addBands(ndbi).addBands(mndwi).addBands(bsi);
+}
+
+// 5. Hàm chuẩn hóa ảnh
+function normalize(image){
+  var bandNames = image.bandNames();
+  var minDict = image.reduceRegion({
+    reducer: ee.Reducer.min(),
+    geometry: ThuDuc,
+    scale: 10,
+    maxPixels: 1e9,
+    bestEffort: true,
+    tileScale: 16
+  });
+  var maxDict = image.reduceRegion({
+    reducer: ee.Reducer.max(),
+    geometry: ThuDuc,
+    scale: 10,
+    maxPixels: 1e9,
+    bestEffort: true,
+    tileScale: 16
+  });
+  var mins = ee.Image.constant(minDict.values(bandNames));
+  var maxs = ee.Image.constant(maxDict.values(bandNames));
+  var normalized = image.subtract(mins).divide(maxs.subtract(mins));
+  return normalized;
+}
+
+// 6. Hàm lấy ảnh Sentinel-2 theo năm/tháng
+function getSentinelImage(year, quarter, geometry) {
+
+// function getQuarterDateRange(year, quarter) 
+// lây theo quy 
+  var numericYear = ee.Number.parse(year);
+  var numericQuarter = ee.Number.parse(quarter);
+
+  var startMonth = numericQuarter.subtract(1).multiply(3).add(1);  // 1, 4, 7, 10
+  var startDate = ee.Date.fromYMD(numericYear, startMonth, 1);
+  var endDate = startDate.advance(3, 'month');
+// lây theo thang
+
+  // var numericMonth = ee.Number.parse(month);
+  // var startDate = ee.Date.fromYMD(numericYear, numericMonth, 1);
+  // var endDate = startDate.advance(1, 'month');
+
+  if (numericYear.getInfo() <= 2018) {
+    var s2 = ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
+      .filterBounds(geometry)
+      .filterDate(startDate, endDate)
+      .select([
+        'B1','B2','B3','B4','B5','B6','B7','B8',
+        'B8A','B9','B11','B12','QA60']);
+      // .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20));
+    var masked = s2.map(maskS2cloudsQA60);
+    return masked.median().multiply(0.0001).clip(geometry);
+  } else {
+    var s2SR = ee.ImageCollection("COPERNICUS/S2_SR")
+      .filterBounds(geometry)
+      .filterDate(startDate, endDate)
+      .select([
+        'B1','B2','B3','B4','B5','B6','B7','B8',
+        'B8A','B9','B11','B12','SCL']);
+    var s2Clouds = ee.ImageCollection("COPERNICUS/S2_CLOUD_PROBABILITY")
+      .filterBounds(geometry)
+      .filterDate(startDate, endDate);
+    var maskedSR = s2SR.map(function (img) {
+      return maskCloudsSCL_CloudProb(img, s2Clouds);
+    });
+    return ee.ImageCollection(maskedSR).mosaic().multiply(0.0001).clip(geometry);//
+  }
+}
+// // Tham số hiển thị
+var visParams = {
+  bands: ['B4', 'B3', 'B2'], 
+  min: 0,
+  max: 0.4,
+  gamma: 1
+};
+var visHNN = {
+  bands: ['B8', 'B4', 'B3'], 
+  min: 0,
+  max: 0.4,
+  gamma: 1
+};
+var palette = ['red', 'green', 'blue', 'gray', 'yellow'];
+var startYear = 2017;
+var endYear = 2018;
+var quarter = ['01'];
+var year = 2017
+// Lay mau
+var trainingPoints = ee.FeatureCollection(
+  'users/codeforRS/' + year + '/training_sample_Quy' + quarter);
+print(trainingPoints)
+//  ***** So Sanh Giua 2 Nam *****
+
+quarters.forEach(function(quarter) {
+  for (var y = startYear; y < endYear; y++) {
+
+    // Lấy ảnh năm y
+    var img1 = getSentinelImage(y.toString(), quarter, ThuDuc);
+    img1 = addIndices(img1);
+
+    // Lấy ảnh năm y+1,
+    var img2 = getSentinelImage((y+1).toString(), quarter, ThuDuc);
+    img2 = addIndices(img2);
+
+    // ======= CHỌN MẪU & TRAIN =======
+    // Giả sử bạn đã có trainingPoints là FeatureCollection có thuộc tính 'landcover'
+    var training = img1.sampleRegions({
+      collection: trainingPoints,
+      properties: ['landcover'],
+      scale: 10
+    });
+
+    var classifier = ee.Classifier.smileRandomForest(100).train({
+      features: training,
+      classProperty: 'landcover',
+      inputProperties: img1.bandNames()
+    });
+
+    // ======= PHÂN LOẠI =======
+    var classified1 = img1.classify(classifier);
+    var classified2 = img2.classify(classifier);
+
+    // ======= TÍNH BIẾN ĐỘNG =======
+    // Cách 1: đánh dấu pixel thay đổi (0 = không đổi, 1 = đổi)
+    var changeMap = classified1.neq(classified2).rename('change');
+
+    // Cách 2: ra bản đồ chênh lệch mã lớp
+    var diffMap = classified2.subtract(classified1).rename('diff');
+
+    // ======= HIỂN THỊ =======
+    var label1 = 'Classified_Y' + y + '_Q' + quarter;
+    var label2 = 'Classified_Y' + (y+1) + '_Q' + quarter;
+
+    Map.addLayer(classified1, {min: 0, max: 4, palette: ['red','green','blue','gray','yellow']}, label1);
+    Map.addLayer(classified2, {min: 0, max: 4, palette: ['red','green','blue','gray','yellow']}, label2);
+    Map.addLayer(changeMap, {min: 0, max: 1, palette: ['white','black']}, 'Change_' + y + '_' + (y+1));
+    Map.addLayer(diffMap, {min: -4, max: 4, palette: ['purple','white','orange']}, 'Diff_' + y + '_' + (y+1));
+  }
+});
+
